@@ -1,53 +1,60 @@
 "use client";
 
 import { useEffect } from "react";
+import { useRouter } from "next/navigation";
 import Image from "next/image";
-import Link from "next/link";
 import { motion } from "framer-motion";
-import { useAppStore } from "@/store/app-store";
+import { createSupabaseBrowserClient } from "@/lib/supabase-client";
 
-export default function Dashboard() {
-  const reset = useAppStore((s) => s.reset);
+export default function Home() {
+  const router = useRouter();
 
-  // Reset any in-progress session when landing back here
   useEffect(() => {
-    reset();
-  }, [reset]);
+    async function redirect() {
+      const supabase = createSupabaseBrowserClient();
+      const { data: { user } } = await supabase.auth.getUser();
+
+      if (!user) {
+        router.replace("/studio/login");
+        return;
+      }
+
+      const { data: staff } = await supabase
+        .from("staff")
+        .select("role")
+        .eq("id", user.id)
+        .maybeSingle();
+
+      router.replace(staff?.role === "admin" ? "/studio/admin" : "/studio/designer");
+    }
+    redirect();
+  }, [router]);
 
   return (
-    <main className="min-h-screen bg-bg flex flex-col items-center justify-center px-4 relative overflow-hidden">
-      {/* Subtle grid texture */}
+    <main className="min-h-[100dvh] bg-bg flex flex-col items-center justify-center px-5 relative overflow-hidden">
       <div
         className="absolute inset-0 opacity-[0.025]"
         style={{
           backgroundImage:
-            "repeating-linear-gradient(0deg, #c9a84c 0px, #c9a84c 1px, transparent 1px, transparent 60px), repeating-linear-gradient(90deg, #c9a84c 0px, #c9a84c 1px, transparent 1px, transparent 60px)",
+            "repeating-linear-gradient(0deg,#c9a84c 0px,#c9a84c 1px,transparent 1px,transparent 60px),repeating-linear-gradient(90deg,#c9a84c 0px,#c9a84c 1px,transparent 1px,transparent 60px)",
         }}
       />
-
-      {/* Corner ornaments */}
       {[
         "top-6 left-6 border-t-2 border-l-2 rounded-tl",
         "top-6 right-6 border-t-2 border-r-2 rounded-tr",
         "bottom-6 left-6 border-b-2 border-l-2 rounded-bl",
         "bottom-6 right-6 border-b-2 border-r-2 rounded-br",
       ].map((cls) => (
-        <div key={cls} className={`absolute w-10 h-10 border-gold/25 ${cls}`} />
+        <div key={cls} className={`absolute w-10 h-10 border-gold/20 ${cls}`} />
       ))}
 
       <motion.div
-        initial={{ opacity: 0, y: 28 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.65, ease: [0.16, 1, 0.3, 1] }}
-        className="flex flex-col items-center gap-10 z-10 w-full max-w-sm"
+        initial={{ opacity: 0, scale: 0.9 }}
+        animate={{ opacity: 1, scale: 1 }}
+        transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
+        className="flex flex-col items-center gap-6 z-10"
       >
-        {/* Logo */}
-        <motion.div
-          initial={{ scale: 0.85, opacity: 0 }}
-          animate={{ scale: 1, opacity: 1 }}
-          transition={{ duration: 0.5, delay: 0.1 }}
-          className="w-28 h-28 relative drop-shadow-2xl"
-        >
+        <div className="w-40 h-40 sm:w-56 sm:h-56 relative drop-shadow-2xl">
           <Image
             src="/cleopatra-logo.svg"
             alt="Cleopatra Ink Studio"
@@ -55,14 +62,13 @@ export default function Dashboard() {
             className="object-contain"
             priority
           />
-        </motion.div>
+        </div>
 
-        {/* Title */}
         <div className="text-center flex flex-col gap-1">
-          <h1 className="font-cinzel text-4xl font-black tracking-[0.12em] text-ink uppercase leading-none">
+          <h1 className="font-cinzel text-4xl sm:text-5xl font-black tracking-[0.12em] text-ink uppercase leading-none">
             Cleopatra
           </h1>
-          <h2 className="font-cinzel text-xl font-bold tracking-[0.22em] text-gold uppercase">
+          <h2 className="font-cinzel text-xl sm:text-2xl font-bold tracking-[0.22em] text-gold uppercase">
             Ink Studio
           </h2>
           <div className="flex items-center gap-3 my-2">
@@ -75,28 +81,15 @@ export default function Dashboard() {
           </p>
         </div>
 
-        {/* CTA */}
-        <motion.div
-          initial={{ opacity: 0, y: 12 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.4, delay: 0.35 }}
-          className="w-full"
-        >
-          <Link href="/new" className="block w-full">
-            <motion.button
-              whileHover={{ scale: 1.03 }}
-              whileTap={{ scale: 0.97 }}
-              className="w-full bg-gold text-bg font-cinzel font-bold text-lg tracking-[0.1em] uppercase py-5 rounded-xl border border-gold hover:bg-gold-light transition-colors shadow-[0_0_32px_rgba(201,168,76,0.25)] cursor-pointer"
-            >
-              ✦ New Customer
-            </motion.button>
-          </Link>
-        </motion.div>
-
-        <p className="text-muted text-[11px] font-mono tracking-widest">
-          CLEOPATRA INK STUDIO © 2026
-        </p>
+        <div className="flex items-center gap-2 mt-2">
+          <div className="w-4 h-4 border-2 border-gold/40 border-t-gold rounded-full animate-spin" />
+          <span className="text-muted text-xs font-mono tracking-widest">Loading…</span>
+        </div>
       </motion.div>
+
+      <p className="absolute bottom-6 text-muted text-[10px] font-mono tracking-widest z-10">
+        CLEOPATRA INK STUDIO © 2026
+      </p>
     </main>
   );
 }

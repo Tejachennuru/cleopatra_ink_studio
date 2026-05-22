@@ -5,53 +5,204 @@ import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import { useDropzone } from "react-dropzone";
 import { useAppStore } from "@/store/app-store";
-import DesignPatternSVG from "@/components/design/DesignPatternSVG";
 import CameraCapture from "@/components/camera/CameraCapture";
+import TattooPlacementEditor from "@/components/placement/TattooPlacementEditor";
+import { blobUrlToBase64 } from "@/lib/image-utils";
+
+const QUICK_PLACEMENTS = [
+  "Upper arm / bicep",
+  "Forearm",
+  "Wrist",
+  "Shoulder / deltoid",
+  "Upper back",
+  "Chest",
+  "Neck",
+  "Ankle / foot",
+  "Calf",
+  "Rib cage",
+  "Thigh",
+  "Behind the ear",
+];
 
 export default function PlacementPage({ params }: { params: Promise<{ sessionId: string }> }) {
   const { sessionId } = use(params);
   const router = useRouter();
 
   const {
-    selectedDesign, customerName,
-    placementText, setPlacementText,
-    bodyPhoto, setBodyPhoto,
-    finalComposite, generatePlacement, finishPlacement,
+    selectedDesign,
+    customerName,
+    customerId,
+    placementText,
+    setPlacementText,
+    bodyPhoto,
+    setBodyPhoto,
+    finalComposite,
+    generatePlacement,
+    finishPlacement,
     isGeneratingPlacement,
+    persistPlacement,
+    finalizeSession,
+    hydrateFromSession,
+    placementDbId,
+    setPlacementDbId,
   } = useAppStore();
+
+  const [hydrating, setHydrating] = useState(true);
 
   const [inputMode, setInputMode] = useState<"text" | "upload" | "camera">("text");
   const [showCamera, setShowCamera] = useState(false);
   const [done, setDone] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // Composite from the interactive placement editor (base64 data URL)
+  const [placementComposite, setPlacementComposite] = useState<string | null>(null);
+  const [finalizing, setFinalizing] = useState(false);
+  // Seconds elapsed since the current generation started; drives the loading UI.
+  const [elapsed, setElapsed] = useState(0);
 
-  // Redirect if no design selected
+  // Tick the elapsed counter while a generation is in flight.
   useEffect(() => {
+    if (!isGeneratingPlacement) {
+      setElapsed(0);
+      return;
+    }
+    const start = Date.now();
+    const id = setInterval(() => setElapsed(Math.floor((Date.now() - start) / 1000)), 1000);
+    return () => clearInterval(id);
+  }, [isGeneratingPlacement]);
+
+  // KEI typically takes 90-180s for the composite step. Cycle status text so
+  // the user knows the wait is normal and not a hang.
+  const STAGE_MESSAGES = [
+    "Analyzing your placement…",
+    "Mapping the design to skin contours…",
+    "Matching lighting and shadows…",
+    "Adding realistic ink absorption…",
+    "Finalizing the preview…",
+  ];
+  const stageIdx = Math.min(STAGE_MESSAGES.length - 1, Math.floor(elapsed / 35));
+  const expectedSeconds = 180;
+  const progressPct = Math.min(95, (elapsed / expectedSeconds) * 100);
+
+  // Restore state from Supabase on mount so a reload doesn't kick the user back.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      await hydrateFromSession(sessionId);
+      if (!cancelled) setHydrating(false);
+    })();
+    return () => { cancelled = true; };
+  }, [sessionId, hydrateFromSession]);
+
+  useEffect(() => {
+    if (hydrating) return;
     if (!customerName) router.replace("/");
-    if (!selectedDesign) router.replace(`/${sessionId}/design`);
-  }, [customerName, selectedDesign, sessionId, router]);
+    else if (!selectedDesign) router.replace(`/${sessionId}/design`);
+  }, [hydrating, customerName, selectedDesign, sessionId, router]);
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     accept: { "image/*": [".jpg", ".jpeg", ".png", ".webp", ".heic"] },
     maxFiles: 1,
     onDrop: (files) => {
       const f = files[0];
-      if (f) setBodyPhoto(URL.createObjectURL(f));
+      if (f) {
+        setBodyPhoto(URL.createObjectURL(f));
+        setPlacementComposite(null);
+      }
     },
   });
 
+  const isPhotoMode = inputMode === "upload" || inputMode === "camera";
+  // In photo modes, user must go through the placement editor first
   const canGenerate =
     (inputMode === "text" && placementText.trim().length > 0) ||
-    (inputMode !== "text" && !!bodyPhoto);
+    (isPhotoMode && !!placementComposite);
 
-  function handleGenerate() {
-    if (!canGenerate) return;
+  async function handleGenerate() {
+    if (!canGenerate || !selectedDesign) return;
+    setError(null);
     generatePlacement();
-    setTimeout(() => {
-      // Use a placeholder composite: body photo if available, otherwise silhouette
-      finishPlacement(bodyPhoto ?? "__silhouette__");
-    }, 3800);
+
+    try {
+      const tattooImageUrl = selectedDesign.imageUrl;
+      if (!tattooImageUrl) throw new Error("No tattoo image available — please go back and regenerate.");
+
+      let bodyImageB64: string | null = null;
+      let compositeImageB64: string | null = null;
+
+      if (isPhotoMode && placementComposite) {
+        // Send the composite (positioned overlay) for exact placement reference
+        compositeImageB64 = placementComposite.replace(/^data:image\/\w+;base64,/, "");
+        // Also send the body photo so the AI has 3 images: composite + design + skin
+        if (bodyPhoto) {
+          bodyImageB64 = await blobUrlToBase64(bodyPhoto);
+        }
+      } else if (isPhotoMode && bodyPhoto) {
+        bodyImageB64 = await blobUrlToBase64(bodyPhoto);
+      }
+
+      const res = await fetch("/api/placement", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sessionId,
+          tattooImageUrl,
+          bodyImageB64,
+          compositeImageB64,
+          placementText: inputMode === "text" ? placementText : "",
+        }),
+      });
+
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error ?? "Placement generation failed");
+
+      const compositeUrl = json.imageUrl as string;
+      const bodyPhotoUrl = (json.bodyPhotoUrl as string | null) ?? undefined;
+      finishPlacement(compositeUrl);
+
+      // Persist this placement attempt — finalize_session will prune non-finalized rows
+      const id = await persistPlacement({
+        placementText: inputMode === "text" ? placementText : undefined,
+        bodyPhotoUrl,
+        compositeUrl,
+      });
+      setPlacementDbId(id);
+    } catch (err) {
+      setError((err as Error).message);
+      finishPlacement("");
+    }
   }
 
+  async function handleFinalize() {
+    if (!selectedDesign?.dbId || !placementDbId) {
+      setError("Unable to finalize — please regenerate and try again.");
+      return;
+    }
+    setFinalizing(true);
+    try {
+      await finalizeSession(selectedDesign.dbId, placementDbId);
+      setDone(true);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setFinalizing(false);
+    }
+  }
+
+  function handleReset() {
+    finishPlacement("");
+    setPlacementComposite(null);
+    setPlacementDbId(null);
+    setError(null);
+  }
+
+  function handleModeChange(mode: "text" | "upload" | "camera") {
+    setInputMode(mode);
+    setBodyPhoto(null);
+    setPlacementComposite(null);
+    setPlacementText("");
+  }
+
+  /* ── Done / summary screen ──────────────────────────────────────── */
   if (done) {
     return (
       <div className="min-h-[80vh] flex items-center justify-center px-4">
@@ -85,9 +236,14 @@ export default function PlacementPage({ params }: { params: Promise<{ sessionId:
           <div className="bg-surface border border-cleo-border rounded-2xl p-5 w-full text-left flex flex-col gap-3">
             <p className="text-muted text-[10px] font-mono uppercase tracking-widest">Summary</p>
             <div className="flex items-center gap-3">
-              <div className="w-12 h-12 rounded-xl overflow-hidden flex-shrink-0 relative border border-gold/30"
-                style={{ background: selectedDesign?.gradient }}>
-                {selectedDesign && <DesignPatternSVG type={selectedDesign.patternType} />}
+              <div
+                className="w-14 h-14 rounded-xl overflow-hidden flex-shrink-0 border border-gold/30"
+                style={{ background: selectedDesign?.gradient }}
+              >
+                {selectedDesign?.imageUrl ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={selectedDesign.imageUrl} alt={selectedDesign.styleName} className="w-full h-full object-cover" />
+                ) : null}
               </div>
               <div>
                 <p className="text-ink text-sm font-cinzel font-bold">{selectedDesign?.styleName}</p>
@@ -108,51 +264,101 @@ export default function PlacementPage({ params }: { params: Promise<{ sessionId:
           <motion.button
             whileHover={{ scale: 1.02 }}
             whileTap={{ scale: 0.97 }}
-            onClick={() => router.push("/")}
+            onClick={() => router.push(customerId ? `/customer/${customerId}` : "/")}
             className="w-full bg-gold text-bg font-cinzel font-bold text-base tracking-[0.08em] uppercase py-4 rounded-xl border border-gold hover:bg-gold-light transition-colors cursor-pointer"
           >
-            ✦ New Customer
+            ✦ Back to Dashboard
           </motion.button>
         </motion.div>
       </div>
     );
   }
 
+  /* ── Main placement screen ──────────────────────────────────────── */
   return (
     <>
       <AnimatePresence>
         {showCamera && (
           <CameraCapture
-            onCapture={(url) => { setBodyPhoto(url); setShowCamera(false); }}
+            onCapture={(url) => { setBodyPhoto(url); setShowCamera(false); setPlacementComposite(null); }}
             onClose={() => setShowCamera(false)}
           />
         )}
       </AnimatePresence>
 
-      <div className="max-w-5xl mx-auto px-4 sm:px-6 py-8 flex flex-col gap-8">
+      <div className="max-w-5xl mx-auto px-4 sm:px-6 pt-6 sm:pt-8 page-with-mobile-footer flex flex-col gap-6 sm:gap-8">
         {/* Heading */}
         <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4 }}>
-          <p className="text-gold text-xs font-mono tracking-[0.2em] uppercase mb-1.5">Step 3 of 3 — Placement</p>
-          <h1 className="font-cinzel text-2xl sm:text-3xl font-black text-ink">Where does it go?</h1>
-          <p className="text-muted text-sm mt-2">
-            Tell us or show us where on the body you&apos;d like the tattoo placed.
+          <p className="text-gold text-[11px] sm:text-xs font-mono tracking-[0.2em] uppercase mb-1.5">Step 2 of 2 — Placement</p>
+          <h1 className="font-cinzel text-xl sm:text-3xl font-black text-ink leading-tight">Where does it go?</h1>
+          <p className="text-muted text-xs sm:text-sm mt-1.5 sm:mt-2 leading-relaxed">
+            Describe the placement area or upload a photo — then position your tattoo directly on the skin.
           </p>
         </motion.div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Left: Selected design */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 sm:gap-6">
+
+          {/* ── Left: Selected design — collapses to a compact card on mobile ── */}
           <motion.div
             initial={{ opacity: 0, x: -10 }}
             animate={{ opacity: 1, x: 0 }}
             transition={{ duration: 0.4, delay: 0.05 }}
-            className="flex flex-col gap-4"
+            className="flex flex-col gap-3 sm:gap-4"
           >
-            <p className="text-muted text-xs font-mono uppercase tracking-widest">Selected Design</p>
+            <p className="text-muted text-[11px] sm:text-xs font-mono uppercase tracking-widest">Your Tattoo Design</p>
+
+            {/* Mobile: small horizontal card so it doesn't dominate the viewport */}
             <div
-              className="rounded-2xl overflow-hidden border border-gold/30 aspect-square relative"
+              className="lg:hidden flex items-center gap-3 bg-surface border border-gold/30 rounded-2xl p-3"
+            >
+              <div
+                className="w-20 h-20 rounded-xl overflow-hidden flex-shrink-0 relative"
+                style={{ background: selectedDesign?.gradient }}
+              >
+                {selectedDesign?.imageUrl ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={selectedDesign.imageUrl}
+                    alt={selectedDesign.styleName}
+                    className="w-full h-full object-cover"
+                  />
+                ) : (
+                  <div className="absolute inset-0 flex items-center justify-center text-muted text-xs font-cinzel">
+                    No image
+                  </div>
+                )}
+              </div>
+              <div className="flex flex-col gap-0.5 min-w-0">
+                <p className="text-gold text-[10px] font-mono tracking-widest uppercase">Selected</p>
+                <p className="font-cinzel text-sm font-bold text-ink truncate">
+                  {selectedDesign?.styleName ?? "—"}
+                </p>
+                <button
+                  onClick={() => router.push(`/${sessionId}/design`)}
+                  className="text-muted text-[10px] font-mono hover:text-gold transition-colors text-left mt-0.5"
+                >
+                  ← Change design
+                </button>
+              </div>
+            </div>
+
+            {/* Tablet / desktop: full square preview */}
+            <div
+              className="hidden lg:block rounded-2xl overflow-hidden border border-gold/30 aspect-square relative"
               style={{ background: selectedDesign?.gradient }}
             >
-              {selectedDesign && <DesignPatternSVG type={selectedDesign.patternType} />}
+              {selectedDesign?.imageUrl ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={selectedDesign.imageUrl}
+                  alt={selectedDesign.styleName}
+                  className="w-full h-full object-contain"
+                />
+              ) : (
+                <div className="absolute inset-0 flex items-center justify-center text-muted text-sm font-cinzel">
+                  No image
+                </div>
+              )}
               <div className="absolute bottom-3 left-3">
                 <span className="bg-black/70 backdrop-blur-sm text-gold text-xs font-cinzel font-bold px-3 py-1 rounded-lg border border-gold/20">
                   {selectedDesign?.styleName}
@@ -161,7 +367,7 @@ export default function PlacementPage({ params }: { params: Promise<{ sessionId:
             </div>
           </motion.div>
 
-          {/* Right: Placement input */}
+          {/* ── Right: Placement input ─────────────────────────────── */}
           <motion.div
             initial={{ opacity: 0, x: 10 }}
             animate={{ opacity: 1, x: 0 }}
@@ -173,7 +379,7 @@ export default function PlacementPage({ params }: { params: Promise<{ sessionId:
               {(["text", "upload", "camera"] as const).map((mode) => (
                 <button
                   key={mode}
-                  onClick={() => { setInputMode(mode); setBodyPhoto(null); }}
+                  onClick={() => handleModeChange(mode)}
                   className={`flex-1 py-2 px-2 rounded-lg text-xs font-cinzel tracking-wide transition-all ${
                     inputMode === mode ? "bg-gold text-bg font-bold" : "text-muted hover:text-ink"
                   }`}
@@ -184,84 +390,130 @@ export default function PlacementPage({ params }: { params: Promise<{ sessionId:
             </div>
 
             <AnimatePresence mode="wait">
+              {/* Text mode */}
               {inputMode === "text" && (
-                <motion.div key="text" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="flex flex-col gap-2">
-                  <label className="text-xs font-mono tracking-[0.15em] uppercase text-muted">Describe placement</label>
-                  <textarea
-                    rows={5}
-                    placeholder="e.g. Upper right arm, outer bicep area, about 4 inches wide. The design should wrap slightly around the arm following the muscle contour..."
-                    value={placementText}
-                    onChange={(e) => setPlacementText(e.target.value)}
-                    className="bg-surface border border-cleo-border rounded-xl px-4 py-3.5 text-ink text-sm placeholder:text-muted/50 focus:border-gold focus:outline-none transition-colors resize-none leading-relaxed"
+                <motion.div key="text" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="flex flex-col gap-3">
+                  <div className="flex flex-wrap gap-2">
+                    {QUICK_PLACEMENTS.map((p) => (
+                      <button
+                        key={p}
+                        onClick={() => setPlacementText(p)}
+                        className={`px-3 py-1.5 rounded-full text-xs font-cinzel border transition-all ${
+                          placementText === p
+                            ? "bg-gold text-bg border-gold font-bold"
+                            : "bg-surface border-cleo-border text-muted hover:border-gold/40 hover:text-ink"
+                        }`}
+                      >
+                        {p}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-xs font-mono tracking-[0.15em] uppercase text-muted">Or describe in detail</label>
+                    <textarea
+                      rows={3}
+                      placeholder="e.g. Upper right arm, outer bicep area, about 4 inches wide…"
+                      value={placementText}
+                      onChange={(e) => setPlacementText(e.target.value)}
+                      className="bg-surface border border-cleo-border rounded-xl px-4 py-3 text-ink text-sm placeholder:text-muted/50 focus:border-gold focus:outline-none transition-colors resize-none leading-relaxed"
+                    />
+                  </div>
+                </motion.div>
+              )}
+
+              {/* Upload mode — step 1: upload body photo */}
+              {inputMode === "upload" && !bodyPhoto && (
+                <motion.div key="upload-empty" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+                  <div
+                    {...getRootProps()}
+                    className={`rounded-xl border-2 border-dashed p-10 text-center cursor-pointer transition-all ${
+                      isDragActive ? "border-gold bg-gold/5" : "border-cleo-border hover:border-gold/40"
+                    }`}
+                  >
+                    <input {...getInputProps()} />
+                    <div className="flex flex-col items-center gap-2">
+                      <div className="w-12 h-12 rounded-full bg-surface-2 flex items-center justify-center text-2xl">+</div>
+                      <p className="text-ink text-sm font-cinzel">Upload body photo</p>
+                      <p className="text-muted text-xs">Photo of the skin area where the tattoo will go</p>
+                    </div>
+                  </div>
+                </motion.div>
+              )}
+
+              {/* Camera mode — step 1: capture body photo */}
+              {inputMode === "camera" && !bodyPhoto && (
+                <motion.div key="camera-empty" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+                  <button
+                    onClick={() => setShowCamera(true)}
+                    className="w-full rounded-xl border-2 border-dashed border-cleo-border hover:border-gold/40 p-10 text-center transition-all"
+                  >
+                    <div className="flex flex-col items-center gap-2">
+                      <div className="w-12 h-12 rounded-full bg-surface-2 flex items-center justify-center text-2xl">📷</div>
+                      <p className="text-ink text-sm font-cinzel">Open Camera</p>
+                      <p className="text-muted text-xs">Point at the placement area on the body</p>
+                    </div>
+                  </button>
+                </motion.div>
+              )}
+
+              {/* Photo mode — step 2: interactive placement editor */}
+              {isPhotoMode && bodyPhoto && !placementComposite && selectedDesign?.imageUrl && (
+                <motion.div key="placement-editor" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+                  <TattooPlacementEditor
+                    bodyPhotoUrl={bodyPhoto}
+                    tattooImageUrl={selectedDesign.imageUrl}
+                    onConfirm={(composite) => setPlacementComposite(composite)}
+                    onReset={() => { setBodyPhoto(null); setPlacementComposite(null); }}
                   />
                 </motion.div>
               )}
 
-              {inputMode === "upload" && (
-                <motion.div key="upload" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-                  {bodyPhoto ? (
-                    <div className="relative group rounded-xl overflow-hidden border border-cleo-border" style={{ aspectRatio: "4/3" }}>
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={bodyPhoto} alt="Body" className="w-full h-full object-cover" />
-                      <button
-                        onClick={() => setBodyPhoto(null)}
-                        className="absolute top-2 right-2 bg-error text-white w-7 h-7 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
-                      >×</button>
-                      <div className="absolute bottom-2 left-2 text-[10px] font-mono text-white/70 bg-black/50 px-2 py-0.5 rounded backdrop-blur-sm">
-                        Body photo added
-                      </div>
+              {/* Photo mode — step 3: composite confirmed, ready to generate */}
+              {isPhotoMode && placementComposite && (
+                <motion.div key="composite-ready" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="flex flex-col gap-3">
+                  <p className="text-muted text-xs font-mono uppercase tracking-widest">Placement Confirmed</p>
+                  <div className="rounded-xl overflow-hidden border border-gold/30 relative" style={{ aspectRatio: "4/3" }}>
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={placementComposite} alt="Placement composite" className="w-full h-full object-cover" />
+                    <div className="absolute top-2 right-2 bg-success/20 border border-success/40 text-success text-[10px] font-mono px-2 py-0.5 rounded-lg backdrop-blur-sm">
+                      ✓ Placement set
                     </div>
-                  ) : (
-                    <div
-                      {...getRootProps()}
-                      className={`rounded-xl border-2 border-dashed p-10 text-center cursor-pointer transition-all ${
-                        isDragActive ? "border-gold bg-gold/5" : "border-cleo-border hover:border-gold/40"
-                      }`}
-                    >
-                      <input {...getInputProps()} />
-                      <div className="flex flex-col items-center gap-2">
-                        <div className="w-12 h-12 rounded-full bg-surface-2 flex items-center justify-center text-2xl">+</div>
-                        <p className="text-ink text-sm font-cinzel">Upload body photo</p>
-                        <p className="text-muted text-xs">Photo of the area where the tattoo will be placed</p>
-                      </div>
-                    </div>
-                  )}
-                </motion.div>
-              )}
-
-              {inputMode === "camera" && (
-                <motion.div key="camera" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-                  {bodyPhoto ? (
-                    <div className="relative group rounded-xl overflow-hidden border border-cleo-border" style={{ aspectRatio: "4/3" }}>
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={bodyPhoto} alt="Body" className="w-full h-full object-cover" />
-                      <button
-                        onClick={() => setBodyPhoto(null)}
-                        className="absolute top-2 right-2 bg-error text-white w-7 h-7 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
-                      >×</button>
-                    </div>
-                  ) : (
-                    <button
-                      onClick={() => setShowCamera(true)}
-                      className="w-full rounded-xl border-2 border-dashed border-cleo-border hover:border-gold/40 p-10 text-center transition-all"
-                    >
-                      <div className="flex flex-col items-center gap-2">
-                        <div className="w-12 h-12 rounded-full bg-surface-2 flex items-center justify-center text-2xl">📷</div>
-                        <p className="text-ink text-sm font-cinzel">Open Camera</p>
-                        <p className="text-muted text-xs">Point at the placement area on the body</p>
-                      </div>
-                    </button>
-                  )}
+                  </div>
+                  <button
+                    onClick={() => setPlacementComposite(null)}
+                    className="text-muted text-xs font-cinzel hover:text-ink transition-colors text-left"
+                  >
+                    ↺ Re-adjust placement
+                  </button>
                 </motion.div>
               )}
             </AnimatePresence>
+
+            {/* Error */}
+            {error && (
+              <div className="bg-error/10 border border-error/30 rounded-xl px-4 py-3 flex items-start gap-3">
+                <div className="flex-1 min-w-0">
+                  <p className="text-error text-xs font-mono leading-relaxed break-words">{error}</p>
+                  <p className="text-muted text-[10px] mt-1">
+                    This is usually a transient AI service issue. Tap Retry to try again.
+                  </p>
+                </div>
+                <button
+                  onClick={() => { setError(null); handleGenerate(); }}
+                  disabled={isGeneratingPlacement || !canGenerate}
+                  className="flex-shrink-0 bg-gold text-bg font-cinzel font-bold text-[10px] tracking-[0.1em] uppercase px-3 py-2 rounded-lg border border-gold hover:bg-gold-light transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  ↺ Retry
+                </button>
+              </div>
+            )}
 
             <motion.button
               whileHover={canGenerate ? { scale: 1.02 } : {}}
               whileTap={canGenerate ? { scale: 0.97 } : {}}
               onClick={handleGenerate}
               disabled={!canGenerate || isGeneratingPlacement}
-              className={`w-full py-4 rounded-xl font-cinzel font-bold text-base tracking-[0.08em] uppercase border transition-all ${
+              className={`hidden sm:block w-full py-4 rounded-xl font-cinzel font-bold text-base tracking-[0.08em] uppercase border transition-all ${
                 canGenerate && !isGeneratingPlacement
                   ? "bg-gold text-bg border-gold hover:bg-gold-light cursor-pointer shadow-[0_0_20px_rgba(201,168,76,0.2)]"
                   : "bg-surface-2 text-muted border-cleo-border cursor-not-allowed"
@@ -272,7 +524,7 @@ export default function PlacementPage({ params }: { params: Promise<{ sessionId:
           </motion.div>
         </div>
 
-        {/* Generation loading */}
+        {/* ── Loading state ──────────────────────────────────────────── */}
         <AnimatePresence>
           {isGeneratingPlacement && (
             <motion.div
@@ -292,21 +544,33 @@ export default function PlacementPage({ params }: { params: Promise<{ sessionId:
               </div>
               <div className="text-center">
                 <p className="font-cinzel text-lg font-bold text-ink">Compositing Your Design…</p>
-                <p className="text-muted text-sm mt-1">Placing the tattoo on the body preview</p>
+                <motion.p
+                  key={stageIdx}
+                  initial={{ opacity: 0, y: 4 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="text-muted text-sm mt-1"
+                >
+                  {STAGE_MESSAGES[stageIdx]}
+                </motion.p>
+                <p className="text-muted/60 text-[10px] font-mono tracking-widest mt-3 uppercase">
+                  {elapsed}s elapsed · usually takes 2–3 min
+                </p>
               </div>
-              <div className="w-56 h-1 bg-surface-2 rounded-full overflow-hidden">
+              <div className="w-64 h-1 bg-surface-2 rounded-full overflow-hidden">
                 <motion.div
                   className="h-full bg-gold rounded-full"
-                  initial={{ width: "0%" }}
-                  animate={{ width: "100%" }}
-                  transition={{ duration: 3.6, ease: "easeInOut" }}
+                  animate={{ width: `${progressPct}%` }}
+                  transition={{ duration: 0.6, ease: "easeOut" }}
                 />
               </div>
+              <p className="text-muted/50 text-[10px] font-mono max-w-xs text-center">
+                If this gets stuck past 4 minutes, AI service is likely congested — you can safely refresh and try again.
+              </p>
             </motion.div>
           )}
         </AnimatePresence>
 
-        {/* Final composite result */}
+        {/* ── Result ────────────────────────────────────────────────── */}
         <AnimatePresence>
           {!isGeneratingPlacement && finalComposite && (
             <motion.div
@@ -320,49 +584,18 @@ export default function PlacementPage({ params }: { params: Promise<{ sessionId:
                 <h2 className="font-cinzel text-xl font-bold text-ink">Placement Preview</h2>
                 <div className="flex items-center gap-1.5">
                   <div className="w-2 h-2 rounded-full bg-success animate-pulse" />
-                  <span className="text-success text-xs font-mono">Generated</span>
+                  <span className="text-success text-xs font-mono">AI Generated</span>
                 </div>
               </div>
 
-              {/* Composite preview */}
-              <div className="rounded-2xl overflow-hidden border border-cleo-border relative" style={{ aspectRatio: "4/3", maxHeight: "480px" }}>
-                {/* Body background */}
-                {finalComposite !== "__silhouette__" ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img src={finalComposite} alt="Body" className="absolute inset-0 w-full h-full object-cover" />
-                ) : (
-                  <div className="absolute inset-0 bg-surface-2 flex items-center justify-center">
-                    <svg viewBox="0 0 120 260" className="h-4/5 opacity-15" fill="var(--cleo-text)">
-                      <ellipse cx="60" cy="28" rx="18" ry="20" />
-                      <rect x="36" y="52" width="48" height="80" rx="8" />
-                      <rect x="12" y="55" width="22" height="68" rx="8" />
-                      <rect x="86" y="55" width="22" height="68" rx="8" />
-                      <rect x="38" y="132" width="20" height="90" rx="8" />
-                      <rect x="62" y="132" width="20" height="90" rx="8" />
-                    </svg>
-                  </div>
-                )}
-
-                {/* Tattoo overlay — centered/positioned on body */}
-                <div
-                  className="absolute rounded-xl overflow-hidden shadow-[0_0_30px_rgba(0,0,0,0.7)]"
-                  style={{
-                    width: "180px",
-                    height: "180px",
-                    top: "50%",
-                    left: "50%",
-                    transform: "translate(-50%, -55%)",
-                    background: selectedDesign?.gradient,
-                    opacity: 0.88,
-                  }}
-                >
-                  {selectedDesign && <DesignPatternSVG type={selectedDesign.patternType} />}
-                  {/* Skin blend overlay */}
-                  <div className="absolute inset-0 bg-gradient-to-br from-transparent via-transparent to-black/20 rounded-xl" />
-                </div>
-
-                {/* Placement label */}
-                <div className="absolute bottom-3 left-3 right-3 flex items-end justify-between">
+              <div className="rounded-2xl overflow-hidden border border-gold/20 relative bg-surface-2">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={finalComposite}
+                  alt="Tattoo placement preview"
+                  className="w-full object-contain max-h-[560px]"
+                />
+                <div className="absolute bottom-3 left-3 right-3 flex items-end justify-between pointer-events-none">
                   <div className="bg-black/70 backdrop-blur-sm text-ink/90 text-xs font-cinzel px-3 py-1.5 rounded-lg">
                     {placementText || "Body placement preview"}
                   </div>
@@ -372,28 +605,68 @@ export default function PlacementPage({ params }: { params: Promise<{ sessionId:
                 </div>
               </div>
 
-              {/* Actions */}
-              <div className="flex flex-col sm:flex-row gap-3">
+              <div className="hidden sm:flex flex-col sm:flex-row gap-3">
                 <motion.button
                   whileHover={{ scale: 1.02 }}
                   whileTap={{ scale: 0.97 }}
-                  onClick={() => { finishPlacement(""); }}
+                  onClick={handleReset}
                   className="flex-1 py-3 rounded-xl font-cinzel text-sm tracking-wide border border-cleo-border text-muted hover:text-ink hover:border-gold/40 transition-all cursor-pointer"
                 >
                   ↺ Try Different Placement
                 </motion.button>
                 <motion.button
-                  whileHover={{ scale: 1.02 }}
-                  whileTap={{ scale: 0.97 }}
-                  onClick={() => setDone(true)}
-                  className="flex-1 bg-gold text-bg font-cinzel font-bold text-base tracking-[0.08em] uppercase py-4 rounded-xl border border-gold hover:bg-gold-light transition-colors cursor-pointer shadow-[0_0_24px_rgba(201,168,76,0.3)]"
+                  whileHover={finalizing ? {} : { scale: 1.02 }}
+                  whileTap={finalizing ? {} : { scale: 0.97 }}
+                  onClick={handleFinalize}
+                  disabled={finalizing}
+                  className="flex-1 bg-gold text-bg font-cinzel font-bold text-base tracking-[0.08em] uppercase py-4 rounded-xl border border-gold hover:bg-gold-light transition-colors cursor-pointer shadow-[0_0_24px_rgba(201,168,76,0.3)] disabled:opacity-60 disabled:cursor-not-allowed"
                 >
-                  ✦ Looks Perfect — Finalize
+                  {finalizing ? "Saving…" : "✦ Looks Perfect — Finalize"}
                 </motion.button>
               </div>
             </motion.div>
           )}
         </AnimatePresence>
+      </div>
+
+      {/* ── Sticky mobile CTA ───────────────────────────────────────── */}
+      <div className="sm:hidden fixed bottom-0 inset-x-0 z-30 bg-bg/95 backdrop-blur-md border-t border-cleo-border px-4 pt-3 pb-safe">
+        {isGeneratingPlacement ? (
+          <button
+            disabled
+            className="w-full py-3.5 rounded-xl font-cinzel font-bold text-sm tracking-[0.08em] uppercase bg-surface-2 text-muted border border-cleo-border cursor-not-allowed"
+          >
+            Generating Preview…
+          </button>
+        ) : finalComposite ? (
+          <div className="flex gap-2">
+            <button
+              onClick={handleReset}
+              className="flex-1 py-3 rounded-xl font-cinzel font-bold text-[11px] tracking-[0.06em] uppercase border border-cleo-border text-muted cursor-pointer"
+            >
+              ↺ Retry
+            </button>
+            <button
+              onClick={handleFinalize}
+              disabled={finalizing}
+              className="flex-[1.6] py-3 rounded-xl font-cinzel font-bold text-sm tracking-[0.06em] uppercase bg-gold text-bg border border-gold cursor-pointer shadow-[0_0_18px_rgba(201,168,76,0.25)] disabled:opacity-60 disabled:cursor-not-allowed"
+            >
+              {finalizing ? "Saving…" : "✦ Finalize"}
+            </button>
+          </div>
+        ) : (
+          <button
+            onClick={handleGenerate}
+            disabled={!canGenerate}
+            className={`w-full py-3.5 rounded-xl font-cinzel font-bold text-sm tracking-[0.08em] uppercase border transition-colors ${
+              canGenerate
+                ? "bg-gold text-bg border-gold cursor-pointer shadow-[0_0_18px_rgba(201,168,76,0.25)]"
+                : "bg-surface-2 text-muted border-cleo-border cursor-not-allowed"
+            }`}
+          >
+            {canGenerate ? "✦ Generate Preview" : inputMode === "text" ? "Describe placement first" : "Confirm placement first"}
+          </button>
+        )}
       </div>
     </>
   );

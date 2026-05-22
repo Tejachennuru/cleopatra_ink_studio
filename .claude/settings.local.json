@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:docs.kie.ai)",
+      "WebFetch(domain:api.kie.ai)",
+      "Bash(xargs wc -l)",
+      "Bash(xargs grep -l \"maxDuration\")",
+      "Bash(npx tsc *)"
+    ]
+  }
+}
