@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { motion } from "framer-motion";
 import Link from "next/link";
@@ -38,7 +38,7 @@ interface CompletedSession {
   placement: { placement_text: string | null; final_composite_url: string | null } | null;
 }
 
-export default function CustomerDashboard() {
+function CustomerDashboardInner() {
   const { userId } = useParams<{ userId: string }>();
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -316,5 +316,17 @@ export default function CustomerDashboard() {
         </div>
       )}
     </main>
+  );
+}
+
+export default function CustomerDashboard() {
+  return (
+    <Suspense fallback={
+      <main className="min-h-screen bg-bg flex items-center justify-center">
+        <div className="w-8 h-8 border-2 border-gold border-t-transparent rounded-full animate-spin" />
+      </main>
+    }>
+      <CustomerDashboardInner />
+    </Suspense>
   );
 }
