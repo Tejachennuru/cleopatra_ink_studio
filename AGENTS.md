@@ -49,7 +49,7 @@ AI-powered tattoo design platform for **in-shop use by staff (designers + admin)
 ## API Routes
 | Route | Purpose |
 |-------|---------|
-| `POST /api/generate` | Fires 5 KEI tasks in parallel, uploads results to Supabase Storage |
+| `POST /api/generate` | Fires 5 KEI tasks in parallel; **streams** NDJSON — each task emits `{type:"result"}` or `{type:"error"}` as it completes, followed by `{type:"done"}` |
 | `POST /api/upload-ref` | Uploads base64 image to Supabase Storage. `prefix` param: `"refs"` (default) or `"designs"` (direct upload mode) |
 | `POST /api/placement` | Generates body+tattoo composite via KEI |
 | `GET /api/pinterest/search` | Pinterest reference image search |

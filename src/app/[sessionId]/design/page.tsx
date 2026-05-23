@@ -22,7 +22,7 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
     tattooDescription, setTattooDescription,
     referenceImages, addReferenceImage, removeReferenceImage, replaceReferenceImage,
     selectedColors, toggleColor, clearColors,
-    generatedDesigns, generateDesigns, finishGenerating,
+    generatedDesigns, generateDesigns, addGeneratedDesign, finishGenerating,
     selectedDesigns, toggleDesignSelection, clearDesignSelection,
     selectDesign,
     refinementText, setRefinementText,
@@ -36,6 +36,9 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
   const [genError, setGenError] = useState<string | null>(null);
   const [lastPayload, setLastPayload] = useState<Record<string, unknown> | null>(null);
   const [elapsed, setElapsed] = useState(0);
+  const [totalSlots, setTotalSlots] = useState(5);
+  const [failedCount, setFailedCount] = useState(0);
+  const prevDesignCountRef = useRef(0);
 
   // Tick elapsed seconds while a generation is in flight — used for the
   // progress UI so the user has an honest sense of wait time.
@@ -95,11 +98,13 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
     if (!hydrating && !customerName) router.replace("/");
   }, [hydrating, customerName, router]);
 
+  // Scroll to grid when first image arrives
   useEffect(() => {
-    if (!isGenerating && generatedDesigns.length > 0) {
+    if (prevDesignCountRef.current === 0 && generatedDesigns.length === 1) {
       setTimeout(() => designsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 150);
     }
-  }, [isGenerating, generatedDesigns.length]);
+    prevDesignCountRef.current = generatedDesigns.length;
+  }, [generatedDesigns.length]);
 
   useEffect(() => {
     if (selectedDesigns.length > 0 && refinementRef.current) {
@@ -254,9 +259,14 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
   const placeholders = ["mandala", "geometric", "tribal", "floral", "dark"] as const;
 
   async function callGenerateAPI(payload: Record<string, unknown>) {
+    const count = (payload.count as number) ?? 5;
     setGenError(null);
     setLastPayload(payload);
-    generateDesigns();
+    setFailedCount(0);
+    setTotalSlots(count);
+    prevDesignCountRef.current = 0;
+    generateDesigns(); // clears generatedDesigns, sets isGenerating: true
+
     try {
       const res = await fetch("/api/generate", {
         method: "POST",
@@ -264,34 +274,54 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
         body: JSON.stringify(payload),
       });
 
-      const json = await res.json();
       if (!res.ok) {
+        const json = await res.json();
         const detail = json.details ? ` (${Array.isArray(json.details) ? json.details.join("; ") : JSON.stringify(json.details)})` : "";
         throw new Error(`${json.error ?? "Generation failed"}${detail}`);
       }
 
-      const designs = (json.images as { id: string; imageUrl: string }[]).map(
-        (img, i) => ({
-          id: img.id,
-          imageUrl: img.imageUrl,
-          gradient: gradients[i % gradients.length],
-          patternType: placeholders[i % placeholders.length],
-          styleName: `Variation ${i + 1}${tattooStyle ? ` — ${tattooStyle}` : ""}`,
-        })
-      );
+      const reader = res.body!.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let designIndex = 0;
 
-      // Persist to Supabase and capture the row IDs before showing them
-      const persisted = await persistDesigns(designs);
-      finishGenerating(persisted);
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
 
-      // Partial-failure note — keep it informational, not error-state
-      if (Array.isArray(json.failures) && json.failures.length > 0) {
-        console.warn("[generate] partial failures:", json.failures);
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          let event: { type: string; index?: number; image?: { id: string; imageUrl: string }; reason?: string };
+          try { event = JSON.parse(line); } catch { continue; }
+
+          if (event.type === "result" && event.image) {
+            const i = designIndex++;
+            const design: DesignVariant = {
+              id: event.image.id,
+              imageUrl: event.image.imageUrl,
+              gradient: gradients[i % gradients.length],
+              patternType: placeholders[i % placeholders.length],
+              styleName: `Variation ${i + 1}${tattooStyle ? ` — ${tattooStyle}` : ""}`,
+            };
+            // Persist to DB then add to store so it's immediately visible
+            persistDesigns([design]).then(([persisted]) => {
+              addGeneratedDesign(persisted ?? design);
+            });
+          } else if (event.type === "error") {
+            console.warn("[generate] slot failed:", event.reason);
+            setFailedCount((n) => n + 1);
+          } else if (event.type === "done") {
+            finishGenerating(); // sets isGenerating: false, keeps accumulated designs
+          }
+        }
       }
     } catch (err) {
       console.error("Generation error:", err);
       setGenError((err as Error).message);
-      finishGenerating([]);
+      finishGenerating(); // keep any images that already arrived
     }
   }
 
@@ -908,9 +938,9 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
           </motion.button>
         </motion.div>
 
-        {/* ── Loading ─────────────────────────────────────────────── */}
+        {/* ── Loading spinner — only while no images have arrived yet ─── */}
         <AnimatePresence>
-          {isGenerating && (
+          {isGenerating && generatedDesigns.length === 0 && (
             <motion.div
               key="loading"
               initial={{ opacity: 0, y: 10 }}
@@ -950,7 +980,7 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
                 />
               </div>
               <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-5 gap-2.5 sm:gap-3 w-full max-w-lg">
-                {Array.from({ length: 5 }).map((_, i) => (
+                {Array.from({ length: totalSlots }).map((_, i) => (
                   <div key={i} className="rounded-xl overflow-hidden border border-cleo-border">
                     <div className="aspect-square skeleton" />
                     <div className="p-2 bg-surface"><div className="h-2 skeleton rounded w-12" /></div>
@@ -961,9 +991,9 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
           )}
         </AnimatePresence>
 
-        {/* ── Design grid ─────────────────────────────────────────── */}
+        {/* ── Design grid — shown as soon as first image arrives ──────── */}
         <AnimatePresence>
-          {!isGenerating && hasGenerated && (
+          {hasGenerated && (
             <motion.div
               key={`designs-${iterationCount}`}
               ref={designsRef}
@@ -978,13 +1008,15 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
                     {iterationCount > 1 ? `Refined Designs — Pass ${iterationCount}` : "Your Designs"}
                   </h2>
                   <p className="text-muted text-[11px] sm:text-xs mt-0.5 leading-snug">
-                    {hasSelection
+                    {isGenerating
+                      ? `${generatedDesigns.length} of ${totalSlots} ready · still generating…`
+                      : hasSelection
                       ? `${selectedDesigns.length} selected — refine or proceed`
                       : "Tap a design to view it full-size, then select"}
                   </p>
                 </div>
                 <div className="flex items-center gap-1.5 sm:gap-2 flex-shrink-0">
-                  {hasSelection && (
+                  {hasSelection && !isGenerating && (
                     <motion.button
                       initial={{ opacity: 0, scale: 0.9 }}
                       animate={{ opacity: 1, scale: 1 }}
@@ -995,17 +1027,22 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
                     </motion.button>
                   )}
                   <span className={`text-[10px] font-mono px-2 sm:px-2.5 py-1 rounded-full border whitespace-nowrap transition-colors ${
-                    hasSelection
+                    hasSelection && !isGenerating
                       ? "text-gold border-gold/40 bg-gold/10"
                       : "text-muted border-cleo-border"
                   }`}>
-                    {hasSelection ? `${selectedDesigns.length} / 4` : "5 variations"}
+                    {isGenerating
+                      ? `${generatedDesigns.length} / ${totalSlots}`
+                      : hasSelection
+                      ? `${selectedDesigns.length} / 4`
+                      : `${generatedDesigns.length} variation${generatedDesigns.length === 1 ? "" : "s"}`}
                   </span>
                 </div>
               </div>
 
-              {/* 4-column grid */}
+              {/* Grid — real cards + skeleton placeholders during streaming */}
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4">
+                {/* Real design cards */}
                 {generatedDesigns.map((design, i) => {
                   const selectionIndex = selectedDesigns.findIndex((d) => d.id === design.id);
                   const isSelected = selectionIndex !== -1;
@@ -1017,75 +1054,104 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
                       key={design.id}
                       initial={{ opacity: 0, scale: 0.88, y: 14 }}
                       animate={{ opacity: 1, scale: 1, y: 0 }}
-                      transition={{ duration: 0.38, delay: i * 0.055, ease: [0.16, 1, 0.3, 1] }}
-                      whileHover={{ scale: 1.03, y: -3 }}
-                      whileTap={{ scale: 0.97 }}
-                      onClick={() => setViewingIndex(i)}
+                      transition={{ duration: 0.38, ease: [0.16, 1, 0.3, 1] }}
+                      whileHover={!isGenerating ? { scale: 1.03, y: -3 } : {}}
+                      whileTap={!isGenerating ? { scale: 0.97 } : {}}
+                      onClick={() => { if (!isGenerating) setViewingIndex(i); }}
                       className={[
-                        "relative rounded-2xl overflow-hidden text-left border-2 transition-all duration-250 cursor-pointer group",
+                        "relative rounded-2xl overflow-hidden text-left border-2 transition-all duration-250",
+                        isGenerating ? "cursor-default" : "cursor-pointer group",
                         isSelected
                           ? "border-gold shadow-[0_0_20px_rgba(201,168,76,0.45)]"
                           : "border-cleo-border hover:border-gold/40",
                       ].join(" ")}
                     >
-                      {/* Artwork */}
                       <div className="aspect-square relative" style={{ background: design.gradient }}>
                         {design.imageUrl ? (
                           // eslint-disable-next-line @next/next/no-img-element
-                          <img
-                            src={design.imageUrl}
-                            alt={design.styleName}
-                            className="w-full h-full object-cover"
-                          />
+                          <img src={design.imageUrl} alt={design.styleName} className="w-full h-full object-cover" />
                         ) : (
                           <DesignPatternSVG type={design.patternType} />
                         )}
-
-                        {/* Selection badge */}
                         {isSelected ? (
-                          <motion.div
-                            initial={{ scale: 0 }}
-                            animate={{ scale: 1 }}
-                            className="absolute top-2 right-2 w-7 h-7 rounded-full bg-gold shadow-lg flex items-center justify-center"
-                          >
+                          <motion.div initial={{ scale: 0 }} animate={{ scale: 1 }}
+                            className="absolute top-2 right-2 w-7 h-7 rounded-full bg-gold shadow-lg flex items-center justify-center">
                             <span className="text-bg text-xs font-black font-mono">{selectionOrder}</span>
                           </motion.div>
                         ) : (
-                          <div className="absolute top-2 right-2 w-6 h-6 rounded-full border-2 border-white/30 bg-black/30 backdrop-blur-sm" />
+                          !isGenerating && <div className="absolute top-2 right-2 w-6 h-6 rounded-full border-2 border-white/30 bg-black/30 backdrop-blur-sm" />
                         )}
-
-                        {/* Design number */}
                         <div className="absolute top-2 left-2">
                           <span className="bg-black/60 backdrop-blur-sm text-ink/70 text-[9px] font-mono px-1.5 py-0.5 rounded">
                             #{i + 1}
                           </span>
                         </div>
-
-                        {/* Selected glow overlay */}
-                        {isSelected && (
-                          <div className="absolute inset-0 ring-2 ring-inset ring-gold/30 rounded-t-2xl pointer-events-none" />
+                        {isSelected && <div className="absolute inset-0 ring-2 ring-inset ring-gold/30 rounded-t-2xl pointer-events-none" />}
+                        {!isGenerating && (
+                          <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-colors flex items-center justify-center pointer-events-none">
+                            <span className="opacity-0 group-hover:opacity-100 transition-opacity bg-gold text-bg font-cinzel text-[10px] font-bold tracking-[0.1em] uppercase px-3 py-1.5 rounded-lg shadow-lg">
+                              🔍 View
+                            </span>
+                          </div>
                         )}
-
-                        {/* Hover hint: View */}
-                        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-colors flex items-center justify-center pointer-events-none">
-                          <span className="opacity-0 group-hover:opacity-100 transition-opacity bg-gold text-bg font-cinzel text-[10px] font-bold tracking-[0.1em] uppercase px-3 py-1.5 rounded-lg shadow-lg">
-                            🔍 View
-                          </span>
-                        </div>
                       </div>
-
                       <div className={`px-3 py-2.5 transition-colors ${isSelected ? "bg-gold/10" : "bg-surface"}`}>
                         <p className={`text-xs font-cinzel font-bold leading-tight ${isSelected ? "text-gold" : "text-ink"}`}>
                           {design.styleName}
                         </p>
                         <p className="text-muted text-[10px] mt-0.5">
-                          {isSelected ? `Selected #${selectionOrder}` : "Tap to view"}
+                          {isGenerating ? "Ready" : isSelected ? `Selected #${selectionOrder}` : canSelect ? "Tap to view" : "Tap to view"}
                         </p>
                       </div>
                     </motion.button>
                   );
                 })}
+
+                {/* Skeleton placeholders for pending slots */}
+                {isGenerating && Array.from({ length: Math.max(0, totalSlots - generatedDesigns.length - failedCount) }).map((_, i) => (
+                  <div key={`skeleton-${i}`} className="rounded-2xl overflow-hidden border-2 border-cleo-border">
+                    <div className="aspect-square skeleton" />
+                    <div className="p-3 bg-surface flex flex-col gap-1.5">
+                      <div className="h-2.5 skeleton rounded w-3/4" />
+                      <div className="h-2 skeleton rounded w-1/2" />
+                    </div>
+                  </div>
+                ))}
+
+                {/* Failed slot cards */}
+                {isGenerating && failedCount > 0 && Array.from({ length: failedCount }).map((_, i) => (
+                  <div key={`failed-${i}`} className="rounded-2xl overflow-hidden border-2 border-error/30 bg-surface">
+                    <div className="aspect-square bg-error/5 flex flex-col items-center justify-center gap-2 p-3">
+                      <svg className="w-6 h-6 text-error/50" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
+                      </svg>
+                      <p className="text-error/60 text-[10px] font-mono text-center">Failed</p>
+                    </div>
+                    <div className="p-3 bg-surface">
+                      <p className="text-error/50 text-[10px] font-mono">Generation failed</p>
+                    </div>
+                  </div>
+                ))}
               </div>
+
+              {/* Failed slots banner after generation completes */}
+              {!isGenerating && failedCount > 0 && (
+                <motion.div
+                  initial={{ opacity: 0, y: 6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="bg-error/10 border border-error/30 rounded-xl px-4 py-3 flex items-center justify-between gap-3"
+                >
+                  <p className="text-error text-xs font-mono">
+                    {failedCount} variation{failedCount > 1 ? "s" : ""} failed to generate
+                  </p>
+                  <button
+                    onClick={handleRetryGenerate}
+                    className="flex-shrink-0 bg-gold text-bg font-cinzel font-bold text-[10px] tracking-[0.1em] uppercase px-3 py-2 rounded-lg border border-gold hover:bg-gold-light transition-colors cursor-pointer"
+                  >
+                    ↺ Retry All
+                  </button>
+                </motion.div>
+              )}
             </motion.div>
           )}
         </AnimatePresence>
@@ -1222,7 +1288,9 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
             disabled
             className="w-full py-3.5 rounded-xl font-cinzel font-bold text-sm tracking-[0.08em] uppercase bg-surface-2 text-muted border border-cleo-border cursor-not-allowed"
           >
-            Generating…
+            {generatedDesigns.length > 0
+              ? `${generatedDesigns.length} of ${totalSlots} ready…`
+              : "Generating…"}
           </button>
         ) : hasSelection ? (
           <div className="flex gap-2">

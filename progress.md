@@ -1,6 +1,6 @@
 # Cleopatra Ink Studio — Progress Tracker
 
-_Last updated: 2026-05-22_
+_Last updated: 2026-05-23_
 
 ---
 
@@ -124,6 +124,15 @@ Full staff login system, role-based access, customer management, session overvie
 - [x] Customer Request section hidden when both `tattoo_style` and `tattoo_description` are empty
 - [x] Reference Images section hidden when no images exist in storage (no empty-state card shown)
 - [x] Each field within Customer Request only renders if it has a value
+
+### Login UX Fixes
+- [x] `middleware.ts` — `isSessionExpired(null)` now returns `false` (was `true`), fixing "session expired" error that blocked first-time staff login
+- [x] `/studio/login` — password visibility toggle (eye icon) added to the password field
+
+### Streaming Image Generation
+- [x] `/api/generate` — switched from batch JSON response to NDJSON streaming; each of the 5 KEI tasks emits its result the moment it completes; removed auto-retry logic
+- [x] `app-store.ts` — added `addGeneratedDesign(design)` action; `generateDesigns()` now clears previous designs on start; `finishGenerating(designs?)` keeps accumulated designs when called with no args
+- [x] Design page — reads the stream line-by-line and appends each image immediately via `addGeneratedDesign`; shows skeleton placeholder cards for pending slots; shows warning cards for failed slots; displays "X of 5 ready · still generating…" status while streaming; failed slots banner with "Retry All" after completion
 
 ### Dead Code Removed
 - [x] `/new/page.tsx` — orphaned customer intake page (designer dashboard has same logic inline)

@@ -42,7 +42,7 @@ function makeSupabaseClient(request: NextRequest, response: { current: NextRespo
 }
 
 function isSessionExpired(lastLogin: string | null): boolean {
-  if (!lastLogin) return true; // never logged in through the new system → force login
+  if (!lastLogin) return false; // null = first login, allow through
   return Date.now() - new Date(lastLogin).getTime() > SESSION_TIMEOUT_MS;
 }
 

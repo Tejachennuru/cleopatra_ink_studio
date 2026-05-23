@@ -58,7 +58,8 @@ interface AppState {
   toggleColor: (hex: string) => void;
   clearColors: () => void;
   generateDesigns: () => void;
-  finishGenerating: (designs: DesignVariant[]) => void;
+  addGeneratedDesign: (design: DesignVariant) => void;
+  finishGenerating: (designs?: DesignVariant[]) => void;
   toggleDesignSelection: (design: DesignVariant) => void;
   clearDesignSelection: () => void;
   selectDesign: (design: DesignVariant) => void;
@@ -204,10 +205,23 @@ export const useAppStore = create<AppState>()(
   setTattooStyle: (style) => set({ tattooStyle: style }),
 
   generateDesigns: () =>
-    set((s) => ({ isGenerating: true, iterationCount: s.iterationCount + 1 })),
+    set((s) => ({
+      isGenerating: true,
+      iterationCount: s.iterationCount + 1,
+      generatedDesigns: [],
+      selectedDesigns: [],
+    })),
 
-  finishGenerating: (designs) =>
-    set({ isGenerating: false, generatedDesigns: designs, selectedDesigns: [], refinementText: "" }),
+  addGeneratedDesign: (design) =>
+    set((s) => ({ generatedDesigns: [...s.generatedDesigns, design] })),
+
+  finishGenerating: (designs?) =>
+    set((s) => ({
+      isGenerating: false,
+      generatedDesigns: designs && designs.length > 0 ? designs : s.generatedDesigns,
+      selectedDesigns: [],
+      refinementText: "",
+    })),
 
   toggleDesignSelection: (design) =>
     set((s) => {
