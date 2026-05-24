@@ -152,6 +152,40 @@ export function buildTattooPrompt(
 // ── 4. PLACEMENT — Standard mode ────────────────────────────
 // Input images: [tattoo design, body photo (optional)]
 
+function inferCameraFrame(placement: string): string {
+  const p = placement.toLowerCase();
+
+  if (/wrist|forearm|inner arm|hand|finger|knuckle/.test(p))
+    return "Frame the shot as if the person is casually extending their arm toward the camera — hand and forearm naturally visible, relaxed pose. The tattoo fills a comfortable portion of the frame.";
+
+  if (/neck|throat|collarbone|clavicle|behind.?ear|nape/.test(p))
+    return "Frame as a natural portrait shot — head and upper chest visible. The tattoo on the neck is the clear focal point without being uncomfortably close.";
+
+  if (/shoulder|upper arm|deltoid|bicep|tricep/.test(p))
+    return "Frame as a three-quarter portrait from the side — shoulder and upper arm clearly visible. Natural standing pose, the tattoo sits as the main subject.";
+
+  if (/chest|sternum|pec|breast/.test(p))
+    return "Frame as an upper-body torso shot — chest and collarbone area in view. Natural lighting, relaxed posture.";
+
+  if (/rib|side|flank/.test(p))
+    return "Frame from the side, upper body — the rib or side area is the clear subject. Natural pose, arm slightly raised if needed to expose the placement.";
+
+  if (/back|spine|shoulder.?blade|upper back|lower back/.test(p))
+    return "Shot from behind — upper or mid back framed naturally, the way a tattoo artist would photograph a back piece. Portrait orientation.";
+
+  if (/ankle|foot|heel|toe/.test(p))
+    return "Shot from a natural low angle — foot and ankle resting comfortably, like someone sitting with legs extended. The ankle area is clearly visible and well-lit.";
+
+  if (/calf|shin|lower leg/.test(p))
+    return "Frame showing the lower leg — knee to foot visible, natural seated or standing pose. The calf or shin tattoo is the main subject.";
+
+  if (/thigh|upper leg|hip|outer thigh/.test(p))
+    return "Frame showing the thigh area naturally — seated or standing pose, the placement clearly in focus without being overly cropped.";
+
+  // Default — let the model infer a sensible frame
+  return "Frame the shot the way a tattoo photographer would to best showcase the tattoo at this placement — close enough that the tattoo is the clear subject, far enough to feel natural and in context.";
+}
+
 export function buildPlacementPrompt(placementDescription: string, hasBodyPhoto: boolean): string {
   const placementClause = placementDescription.trim()
     ? `Place the tattoo on the ${placementDescription.trim()}.`
@@ -159,7 +193,7 @@ export function buildPlacementPrompt(placementDescription: string, hasBodyPhoto:
 
   const bodyContext = hasBodyPhoto
     ? "Image 1 is the tattoo design. Image 2 is the customer's body photo — composite the tattoo naturally onto it."
-    : "Image 1 is the tattoo design. Generate a realistic body showing the placement area and composite the tattoo onto it.";
+    : `Image 1 is the tattoo design. Generate a realistic human body for the placement area and composite the tattoo onto it.\n\nCAMERA FRAMING: ${inferCameraFrame(placementDescription)}`;
 
   return `
 Create a realistic tattoo placement preview.
@@ -169,13 +203,13 @@ ${bodyContext}
 
 REQUIREMENTS:
 - The tattoo ink appears absorbed into the skin surface — follows skin curves, contours, and lighting
-- Match the lighting direction and shadows from the body photo
+- Match the lighting direction and shadows from the body
 - Preserve the tattoo's linework, detail, and proportions exactly — do not alter the design
 - Tattoo edges blend seamlessly into the surrounding skin — no borders or sticker effect
 - Scale the tattoo anatomically for the body part
 - Add subtle skin highlights and shadows over the tattoo for realism
 
-OUTPUT: The full body photo with the tattoo composited in place — photorealistic, professional tattoo portfolio quality.
+OUTPUT: Photorealistic tattoo portfolio quality — the kind of photo a professional tattoo studio would post to showcase their work.
 `.trim();
 }
 

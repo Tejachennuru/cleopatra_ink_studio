@@ -125,6 +125,9 @@ Full staff login system, role-based access, customer management, session overvie
 - [x] Reference Images section hidden when no images exist in storage (no empty-state card shown)
 - [x] Each field within Customer Request only renders if it has a value
 
+### Placement — Smarter Camera Framing (No Body Photo)
+- [x] `src/lib/prompts.ts` — added `inferCameraFrame(placement)` helper that maps the placement text to a natural photographer's framing instruction (wrist → arm extended; neck → portrait head/chest; shoulder → three-quarter side portrait; ankle → low-angle foot; back → behind-portrait; etc.). Injected into `buildPlacementPrompt` only when no body photo is uploaded, so the AI generates a close-to-medium focused shot instead of a full-body image.
+
 ### Login UX Fixes
 - [x] `middleware.ts` — `isSessionExpired(null)` now returns `false` (was `true`), fixing "session expired" error that blocked first-time staff login
 - [x] `/studio/login` — password visibility toggle (eye icon) added to the password field
