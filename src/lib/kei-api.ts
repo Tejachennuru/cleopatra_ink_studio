@@ -15,11 +15,32 @@ export interface KeiTaskResult {
   failCode?: string | number;
 }
 
-export async function createKeiTask(prompt: string, inputUrls: string[]): Promise<string> {
-  const body = {
-    model: "gpt-image-2-image-to-image",
-    input: { prompt, input_urls: inputUrls, aspect_ratio: "1:1", resolution: "1K" },
-  };
+export type KeiModel = "gpt-image-2-image-to-image" | "nano-banana-pro";
+
+export interface CreateKeiTaskOptions {
+  model?: KeiModel;
+}
+
+export async function createKeiTask(
+  prompt: string,
+  inputUrls: string[],
+  options: CreateKeiTaskOptions = {}
+): Promise<string> {
+  const model = options.model ?? "gpt-image-2-image-to-image";
+
+  // nano-banana-pro (Gemini 3 Pro Image) uses `image_input`; gpt-image uses `input_urls`.
+  const input =
+    model === "nano-banana-pro"
+      ? {
+          prompt,
+          image_input: inputUrls,
+          aspect_ratio: "1:1",
+          resolution: "1K",
+          output_format: "png",
+        }
+      : { prompt, input_urls: inputUrls, aspect_ratio: "1:1", resolution: "1K" };
+
+  const body = { model, input };
 
   const maxAttempts = 3;
   let lastError: Error | null = null;

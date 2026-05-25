@@ -9,11 +9,15 @@ type KeiRunResult =
   | { ok: true; url: string; taskId: string }
   | { ok: false; kind: "failed" | "timeout" | "error"; reason: string; taskId?: string };
 
+// Final body-placement image is rendered with Gemini 3 Pro Image (nano-banana-pro)
+// via KEI for higher photorealism. Design generation still uses gpt-image.
+const PLACEMENT_MODEL = "nano-banana-pro" as const;
+
 // Single attempt at a KEI generation. Caller decides whether to retry.
 async function runKeiOnce(prompt: string, inputUrls: string[]): Promise<KeiRunResult> {
   let taskId: string | undefined;
   try {
-    taskId = await createKeiTask(prompt, inputUrls);
+    taskId = await createKeiTask(prompt, inputUrls, { model: PLACEMENT_MODEL });
     const url = await waitForKeiTask(taskId);
     return { ok: true, url, taskId };
   } catch (err) {
