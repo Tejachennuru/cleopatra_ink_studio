@@ -15,6 +15,23 @@ export interface KeiTaskResult {
   failCode?: string | number;
 }
 
+// Thrown when KEI rejects a task because the account is out of credits / balance.
+// This is a hard stop, not a transient error — callers must NOT retry.
+export class KeiCreditsError extends Error {
+  constructor(public readonly detail: string) {
+    super(`KEI insufficient credits: ${detail}`);
+    this.name = "KeiCreditsError";
+  }
+}
+
+// Matches the various ways KEI signals an exhausted balance. Kept narrow so it
+// only catches credit/quota issues, not unrelated failures.
+const CREDITS_PATTERN = /insufficient|not enough|no\s+credit|out of credit|credit|balance|quota|arrears|payment required/i;
+
+function isCreditsMessage(msg: string): boolean {
+  return CREDITS_PATTERN.test(msg);
+}
+
 export type KeiModel = "gpt-image-2-image-to-image" | "nano-banana-pro";
 
 export interface CreateKeiTaskOptions {
@@ -58,11 +75,20 @@ export async function createKeiTask(
         throw new Error(`KEI createTask HTTP ${res.status}: ${text.slice(0, 150)}`);
       }
 
+      // Payment Required — account is out of credits. Hard stop, never retry.
+      if (res.status === 402) {
+        const text = await res.text().catch(() => "");
+        throw new KeiCreditsError(text.slice(0, 150) || "HTTP 402 Payment Required");
+      }
+
       const json = await res.json();
       console.log("[kei createTask]", `attempt=${attempt}`, JSON.stringify(json).slice(0, 300));
 
       if (json.code !== 200) {
         const msg = String(json.msg ?? "");
+        // Exhausted balance — hard stop. Throwing KeiCreditsError skips the
+        // retry loop (the catch below rethrows it immediately).
+        if (json.code === 402 || isCreditsMessage(msg)) throw new KeiCreditsError(msg || `code ${json.code}`);
         const isTransient = /internal|timeout|temporar|try again|busy|503|502|504/i.test(msg);
         if (!isTransient || attempt === maxAttempts) throw new Error(`KEI createTask failed: ${msg}`);
         throw new Error(`KEI createTask transient: ${msg}`);
@@ -70,6 +96,8 @@ export async function createKeiTask(
 
       return json.data.taskId as string;
     } catch (err) {
+      // Credits errors are non-retryable — surface immediately.
+      if (err instanceof KeiCreditsError) throw err;
       lastError = err as Error;
       if (attempt < maxAttempts) {
         const delayMs = 1500 * attempt;
@@ -170,7 +198,10 @@ export async function waitForKeiTask(taskId: string, timeoutMs = 240_000): Promi
     await sleep(3000);
     const result = await pollKeiTask(taskId);
     if (result.status === "success" && result.imageUrl) return result.imageUrl;
-    if (result.status === "failed") throw new KeiTaskFailedError(taskId, result.failMsg, result.failCode);
+    if (result.status === "failed") {
+      if (result.failMsg && isCreditsMessage(result.failMsg)) throw new KeiCreditsError(result.failMsg);
+      throw new KeiTaskFailedError(taskId, result.failMsg, result.failCode);
+    }
   }
   throw new Error(`Task ${taskId} timed out`);
 }

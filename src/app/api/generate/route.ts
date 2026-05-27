@@ -1,11 +1,11 @@
 import { NextRequest } from "next/server";
-import { buildTattooPrompt, createKeiTask, waitForKeiTask, KeiTaskFailedError } from "@/lib/kei-api";
+import { buildTattooPrompt, createKeiTask, waitForKeiTask, KeiTaskFailedError, KeiCreditsError } from "@/lib/kei-api";
 import type { RefinementInfo } from "@/lib/kei-api";
 import { uploadBase64, uploadFromUrl } from "@/lib/storage";
 
 type RunResult =
   | { ok: true; url: string }
-  | { ok: false; reason: string; taskId?: string };
+  | { ok: false; reason: string; taskId?: string; credits?: boolean };
 
 async function runOneTask(prompt: string, inputUrls: string[]): Promise<RunResult> {
   let taskId: string | undefined;
@@ -14,6 +14,9 @@ async function runOneTask(prompt: string, inputUrls: string[]): Promise<RunResul
     const url = await waitForKeiTask(taskId);
     return { ok: true, url };
   } catch (err) {
+    if (err instanceof KeiCreditsError) {
+      return { ok: false, reason: err.message, credits: true };
+    }
     if (err instanceof KeiTaskFailedError) {
       return { ok: false, reason: err.failMsg ?? "Unknown KEI failure", taskId: err.taskId };
     }
@@ -29,6 +32,7 @@ export async function POST(req: NextRequest) {
     description,
     style,
     images: b64Images = [],
+    referenceImageUrls = [] as string[],
     refineImageUrls = [] as string[],
     refinementText = "",
     selectedDesignNames = [] as string[],
@@ -43,28 +47,29 @@ export async function POST(req: NextRequest) {
   const isRefinement = refineImageUrls.length > 0 && refinementText.trim().length > 0;
 
   // ── Build input URL list ─────────────────────────────────────────────
-  let inputUrls: string[] = [];
-
-  if (isRefinement) {
-    inputUrls = refineImageUrls as string[];
-    if ((b64Images as string[]).length > 0) {
-      try {
-        const uploaded = await Promise.all(
-          (b64Images as string[]).map((b64) => uploadBase64(b64, sessionId, "refs"))
-        );
-        inputUrls = [...inputUrls, ...uploaded];
-      } catch (err) {
-        return Response.json({ error: `Image upload failed: ${(err as Error).message}` }, { status: 500 });
-      }
-    }
-  } else if ((b64Images as string[]).length > 0) {
+  // References can come in two shapes:
+  //   - `images`: base64 payloads (fresh blob URLs from dropzone/camera) → upload here
+  //   - `referenceImageUrls`: already-hosted URLs (Pinterest pins uploaded in the background) → pass through
+  // Mixing them lets us avoid re-uploading already-stored Pinterest images.
+  let uploadedRefUrls: string[] = [];
+  if ((b64Images as string[]).length > 0) {
     try {
-      inputUrls = await Promise.all(
+      uploadedRefUrls = await Promise.all(
         (b64Images as string[]).map((b64) => uploadBase64(b64, sessionId, "refs"))
       );
     } catch (err) {
       return Response.json({ error: `Image upload failed: ${(err as Error).message}` }, { status: 500 });
     }
+  }
+
+  const hostedRefs = (referenceImageUrls as string[]).filter((u) => typeof u === "string" && u.length > 0);
+  const allRefs = [...uploadedRefUrls, ...hostedRefs];
+
+  let inputUrls: string[];
+  if (isRefinement) {
+    inputUrls = [...(refineImageUrls as string[]), ...allRefs];
+  } else if (allRefs.length > 0) {
+    inputUrls = allRefs;
   } else {
     inputUrls = ["https://upload.wikimedia.org/wikipedia/commons/thumb/2/2f/Culinary_fruits_front_view.jpg/220px-Culinary_fruits_front_view.jpg"];
   }
@@ -81,7 +86,7 @@ export async function POST(req: NextRequest) {
     };
   }
 
-  const hasUserRefs = (b64Images as string[]).length > 0;
+  const hasUserRefs = allRefs.length > 0;
   const prompt = buildTattooPrompt(
     description,
     style ?? "",
@@ -104,7 +109,12 @@ export async function POST(req: NextRequest) {
         .then(async (result) => {
           if (!result.ok) {
             console.warn(`[generate] task ${index} failed: ${result.reason}`);
-            await emit({ type: "error", index, reason: result.reason });
+            await emit({
+              type: "error",
+              index,
+              reason: result.reason,
+              ...(result.credits ? { code: "insufficient_credits" } : {}),
+            });
             return;
           }
           try {

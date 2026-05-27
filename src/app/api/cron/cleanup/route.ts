@@ -4,7 +4,7 @@ import { createServiceClient } from "@/lib/supabase-server";
 export const maxDuration = 300;
 
 const BUCKET = "session-assets";
-const SESSION_TTL_HOURS = 3;
+const SESSION_TTL_HOURS = 24;
 
 // Deletes every file stored under `{sessionId}/` in the session-assets bucket.
 // Returns the count of files removed.

@@ -1,24 +1,96 @@
 import jsPDF from "jspdf";
 
-// Aspect ratios shown on the print proof.
-const RATIOS: Array<{ label: string; w: number; h: number }> = [
-  { label: "1:1",  w: 1,  h: 1  },
-  { label: "4:3",  w: 4,  h: 3  },
-  { label: "3:2",  w: 3,  h: 2  },
-  { label: "16:9", w: 16, h: 9  },
-  { label: "9:16", w: 9,  h: 16 },
-  { label: "4:5",  w: 4,  h: 5  },
-];
+// ── A4 + sheet-grid geometry ────────────────────────────────────────
+// A single A4 page in millimetres (portrait).
+export const A4_MM = { w: 210, h: 297 };
 
-// Supabase Storage URLs need to be proxied client-side to avoid CORS taint when
-// we hand them to jsPDF (which serializes via canvas). The existing proxy route
-// already handles this for the placement editor.
+// How N sheets are arranged into a grid (portrait-leaning per product spec).
+// The tattoo is tiled across the whole grid as ONE large image; each sheet
+// holds one piece, printed at 100% and taped together.
+export const SHEET_GRID: Record<number, { cols: number; rows: number }> = {
+  1: { cols: 1, rows: 1 },
+  2: { cols: 1, rows: 2 },
+  4: { cols: 2, rows: 2 },
+  8: { cols: 2, rows: 4 },
+};
+
+export const SHEET_COUNTS = [1, 2, 4, 8] as const;
+export type SheetCount = (typeof SHEET_COUNTS)[number];
+
+export function stencilGrid(count: number): { cols: number; rows: number } {
+  return SHEET_GRID[count] ?? SHEET_GRID[1];
+}
+
+export interface StencilLayout {
+  cols: number;
+  rows: number;
+  totalW: number; // mm — full grid width
+  totalH: number; // mm — full grid height
+  tattooLeft: number; // mm — tattoo box left on the grid
+  tattooTop: number; // mm — tattoo box top on the grid
+  tattooW: number; // mm
+  tattooH: number; // mm
+}
+
+/**
+ * Pure geometry shared by the on-screen preview and the PDF export so both
+ * agree pixel-for-pixel. `center` is the tattoo's centre in mm on the full
+ * grid; `aspect` is the tattoo's natural width/height.
+ *
+ * At 100% the tattoo's longer side equals the grid's shorter side, so it sits
+ * comfortably inside a single column/row; the % can push it larger (it then
+ * spans multiple sheets) or smaller.
+ */
+export function computeStencilLayout(opts: {
+  count: number;
+  sizePercent: number;
+  aspect: number;
+  center: { x: number; y: number };
+}): StencilLayout {
+  const { cols, rows } = stencilGrid(opts.count);
+  const totalW = cols * A4_MM.w;
+  const totalH = rows * A4_MM.h;
+  const baseSize = Math.min(totalW, totalH);
+  const longSide = baseSize * (opts.sizePercent / 100);
+
+  const aspect = opts.aspect > 0 ? opts.aspect : 1;
+  let tattooW: number;
+  let tattooH: number;
+  if (aspect >= 1) {
+    tattooW = longSide;
+    tattooH = longSide / aspect;
+  } else {
+    tattooH = longSide;
+    tattooW = longSide * aspect;
+  }
+
+  return {
+    cols,
+    rows,
+    totalW,
+    totalH,
+    tattooLeft: opts.center.x - tattooW / 2,
+    tattooTop: opts.center.y - tattooH / 2,
+    tattooW,
+    tattooH,
+  };
+}
+
+/** Default centre for a given sheet count — middle of the full grid. */
+export function defaultStencilCenter(count: number): { x: number; y: number } {
+  const { cols, rows } = stencilGrid(count);
+  return { x: (cols * A4_MM.w) / 2, y: (rows * A4_MM.h) / 2 };
+}
+
+// ── Image loading (CORS-safe via proxy) ─────────────────────────────
+// Supabase Storage URLs must be proxied so the canvas isn't tainted when we
+// serialize it for jsPDF.
 function resolveImageSrc(src: string): string {
   if (src.startsWith("blob:") || src.startsWith("data:")) return src;
   return `/api/proxy-image?url=${encodeURIComponent(src)}`;
 }
 
-function loadImage(src: string): Promise<HTMLImageElement> {
+export function loadStencilImage(src: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const img = new Image();
     const isLocal = src.startsWith("blob:") || src.startsWith("data:");
@@ -29,152 +101,180 @@ function loadImage(src: string): Promise<HTMLImageElement> {
   });
 }
 
-// Render the source image onto a square canvas at fixed resolution so the PDF
-// gets a clean, deterministic JPEG regardless of the source's native size.
-function imageToSquareJpeg(img: HTMLImageElement, size = 1024): string {
-  const canvas = document.createElement("canvas");
-  canvas.width = size;
-  canvas.height = size;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) throw new Error("Canvas 2D context unavailable");
-  ctx.fillStyle = "#ffffff";
-  ctx.fillRect(0, 0, size, size);
-  // Letterbox so we never distort even if the source isn't perfectly square.
-  const srcRatio = img.naturalWidth / img.naturalHeight;
-  let drawW = size;
-  let drawH = size;
-  if (srcRatio > 1) drawH = size / srcRatio;
-  else if (srcRatio < 1) drawW = size * srcRatio;
-  const dx = (size - drawW) / 2;
-  const dy = (size - drawH) / 2;
-  ctx.drawImage(img, dx, dy, drawW, drawH);
-  return canvas.toDataURL("image/jpeg", 0.95);
+function imageFromDataUrl(dataUrl: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error("Trimmed image failed to load"));
+    img.src = dataUrl;
+  });
 }
 
-export interface TattooPdfOptions {
+/**
+ * Load the design and trim its empty (near-white / transparent) margins so the
+ * returned image is the actual tattoo content — not the square frame it was
+ * generated inside. This makes the size % reference the real ink relative to
+ * A4, and keeps scaling centred on the ink (no drift when the content was
+ * off-centre in the original frame). Falls back to the untrimmed image if the
+ * canvas is tainted or no content is found.
+ */
+export async function loadTrimmedStencilImage(src: string): Promise<HTMLImageElement> {
+  const img = await loadStencilImage(src);
+  const w = img.naturalWidth;
+  const h = img.naturalHeight;
+  if (!w || !h) return img;
+
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  if (!ctx) return img;
+  ctx.drawImage(img, 0, 0);
+
+  let data: Uint8ClampedArray;
+  try {
+    data = ctx.getImageData(0, 0, w, h).data;
+  } catch {
+    return img; // cross-origin taint — can't inspect pixels, use as-is
+  }
+
+  // A pixel counts as ink if it's visible AND not near-white. Tattoo designs
+  // are line art on a white (or transparent) ground, so this isolates the art.
+  let minX = w, minY = h, maxX = -1, maxY = -1;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 4;
+      if (data[i + 3] <= 16) continue;
+      if (data[i] < 244 || data[i + 1] < 244 || data[i + 2] < 244) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+
+  if (maxX < minX || maxY < minY) return img; // blank — nothing to trim
+
+  // A hair of padding so anti-aliased edges aren't clipped.
+  const padX = Math.round((maxX - minX + 1) * 0.02);
+  const padY = Math.round((maxY - minY + 1) * 0.02);
+  minX = Math.max(0, minX - padX);
+  minY = Math.max(0, minY - padY);
+  maxX = Math.min(w - 1, maxX + padX);
+  maxY = Math.min(h - 1, maxY + padY);
+
+  const cw = maxX - minX + 1;
+  const ch = maxY - minY + 1;
+  // Negligible margin — keep the original (avoids a needless re-encode).
+  if (cw >= w * 0.98 && ch >= h * 0.98) return img;
+
+  const out = document.createElement("canvas");
+  out.width = cw;
+  out.height = ch;
+  const octx = out.getContext("2d");
+  if (!octx) return img;
+  octx.drawImage(img, minX, minY, cw, ch, 0, 0, cw, ch);
+
+  return imageFromDataUrl(out.toDataURL("image/png"));
+}
+
+// ── Multi-page stencil PDF ──────────────────────────────────────────
+export interface StencilPdfOptions {
   imageUrl: string;
-  /** Used in the header sub-line (e.g. session ID or style name). Optional. */
+  count: number;
+  sizePercent: number;
+  mirrored: boolean;
+  /** Clockwise rotation in degrees, applied about the tattoo's centre. */
+  rotation?: number;
+  center: { x: number; y: number };
+  /** Pre-loaded image to reuse the preview's load (skips a second fetch). */
+  image?: HTMLImageElement;
   subtitle?: string;
-  /** Filename for the downloaded PDF. Defaults to "tattoo-sizes.pdf". */
   filename?: string;
 }
 
 /**
- * Render an A4 PDF showing the tattoo design in 6 aspect-ratio frames
- * (1:1, 4:3, 3:2, 16:9, 9:16, 4:5) and trigger a download.
+ * Render the tattoo tiled across the sheet grid and emit one A4 page per sheet
+ * (row-major). Each page is the full-bleed slice of the design that belongs on
+ * that physical sheet, drawn at true mm scale so printing at 100% yields the
+ * intended size. A faint corner label aids assembly.
  */
-export async function downloadTattooSizesPdf({
+export async function downloadTattooStencilPdf({
   imageUrl,
+  count,
+  sizePercent,
+  mirrored,
+  rotation = 0,
+  center,
+  image,
   subtitle,
-  filename = "tattoo-sizes.pdf",
-}: TattooPdfOptions): Promise<void> {
-  const img = await loadImage(imageUrl);
-  const tattooDataUrl = imageToSquareJpeg(img);
+  filename = "tattoo-stencil.pdf",
+}: StencilPdfOptions): Promise<void> {
+  const img = image ?? (await loadStencilImage(imageUrl));
+  const aspect = img.naturalWidth > 0 && img.naturalHeight > 0 ? img.naturalWidth / img.naturalHeight : 1;
+  const layout = computeStencilLayout({ count, sizePercent, aspect, center });
+  const { cols, rows, tattooLeft, tattooTop, tattooW, tattooH } = layout;
+
+  // 150 DPI is plenty: the source design is ~1K, so higher DPI adds file size
+  // without real detail. pxPerMm = DPI / 25.4.
+  const DPI = 150;
+  const pxPerMm = DPI / 25.4;
+  const sheetWpx = Math.round(A4_MM.w * pxPerMm);
+  const sheetHpx = Math.round(A4_MM.h * pxPerMm);
 
   const doc = new jsPDF({ unit: "mm", format: "a4", orientation: "portrait" });
+  const total = cols * rows;
 
-  // ── Page geometry (mm) ───────────────────────────────────────────
-  const pageW = 210;
-  const pageH = 297;
-  const marginX = 12;
-  const headerH = 22;
-  const footerH = 12;
+  let pageIndex = 0;
+  for (let row = 0; row < rows; row++) {
+    for (let col = 0; col < cols; col++) {
+      if (pageIndex > 0) doc.addPage();
 
-  // ── Header ───────────────────────────────────────────────────────
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(18);
-  doc.setTextColor(20);
-  doc.text("Tattoo Size Preview", pageW / 2, 13, { align: "center" });
+      const canvas = document.createElement("canvas");
+      canvas.width = sheetWpx;
+      canvas.height = sheetHpx;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) throw new Error("Canvas 2D context unavailable");
 
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(9);
-  doc.setTextColor(110);
-  const sub = subtitle ? `${subtitle} · ` : "";
-  doc.text(`${sub}Cleopatra Ink Studio`, pageW / 2, 19, { align: "center" });
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, sheetWpx, sheetHpx);
 
-  // Header divider
-  doc.setDrawColor(220);
-  doc.setLineWidth(0.2);
-  doc.line(marginX, 22, pageW - marginX, 22);
+      // Tattoo box expressed relative to THIS sheet's origin (mm → px).
+      const dx = (tattooLeft - col * A4_MM.w) * pxPerMm;
+      const dy = (tattooTop - row * A4_MM.h) * pxPerMm;
+      const dw = tattooW * pxPerMm;
+      const dh = tattooH * pxPerMm;
 
-  // ── 2×3 grid of cells ────────────────────────────────────────────
-  const cols = 2;
-  const rows = 3;
-  const gutter = 6;
-  const gridX = marginX;
-  const gridY = headerH + 4;
-  const gridW = pageW - 2 * marginX;
-  const gridH = pageH - headerH - footerH - 8;
-  const cellW = (gridW - gutter * (cols - 1)) / cols;
-  const cellH = (gridH - gutter * (rows - 1)) / rows;
+      // Transform about the tattoo's centre. The centre is the SAME global
+      // point on every sheet (just offset by the sheet origin), so mirror +
+      // rotation stay consistent across the whole tiled composite. Order
+      // (mirror then rotate) matches the CSS preview's `scaleX(-1) rotate()`.
+      const cxpx = dx + dw / 2;
+      const cypx = dy + dh / 2;
+      ctx.save();
+      ctx.translate(cxpx, cypx);
+      if (mirrored) ctx.scale(-1, 1);
+      if (rotation) ctx.rotate((rotation * Math.PI) / 180);
+      ctx.drawImage(img, -dw / 2, -dh / 2, dw, dh);
+      ctx.restore();
 
-  RATIOS.forEach((r, idx) => {
-    const col = idx % cols;
-    const row = Math.floor(idx / cols);
-    const x = gridX + col * (cellW + gutter);
-    const y = gridY + row * (cellH + gutter);
+      // Faint assembly label, top-left corner.
+      ctx.fillStyle = "rgba(0,0,0,0.32)";
+      ctx.font = `${Math.round(3.5 * pxPerMm)}px sans-serif`;
+      ctx.textBaseline = "top";
+      const label = total > 1 ? `Sheet ${pageIndex + 1}/${total} · R${row + 1}·C${col + 1}` : "Stencil";
+      ctx.fillText(label, 4 * pxPerMm, 4 * pxPerMm);
 
-    // Cell label
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(10);
-    doc.setTextColor(40);
-    doc.text(r.label, x + cellW / 2, y + 5, { align: "center" });
-
-    // Area for the aspect-ratio frame, below the label
-    const labelGap = 8;
-    const innerX = x;
-    const innerY = y + labelGap;
-    const innerW = cellW;
-    const innerH = cellH - labelGap;
-
-    // Fit an aspect-ratio rectangle inside the cell's inner area
-    const ratio = r.w / r.h;
-    let frameW = innerW;
-    let frameH = frameW / ratio;
-    if (frameH > innerH) {
-      frameH = innerH;
-      frameW = frameH * ratio;
+      doc.addImage(canvas.toDataURL("image/png"), "PNG", 0, 0, A4_MM.w, A4_MM.h);
+      pageIndex++;
     }
-    const frameX = innerX + (innerW - frameW) / 2;
-    const frameY = innerY + (innerH - frameH) / 2;
+  }
 
-    // Soft frame fill + border so the proportions are visible at a glance
-    doc.setFillColor(252, 252, 252);
-    doc.setDrawColor(180);
-    doc.setLineWidth(0.25);
-    doc.rect(frameX, frameY, frameW, frameH, "FD");
-
-    // Square tattoo centered inside the frame (no distortion)
-    const tattooSize = Math.min(frameW, frameH) * 0.92;
-    const tx = frameX + (frameW - tattooSize) / 2;
-    const ty = frameY + (frameH - tattooSize) / 2;
-    doc.addImage(tattooDataUrl, "JPEG", tx, ty, tattooSize, tattooSize);
-
-    // Dimension hint (e.g. "16 × 9")
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(7);
-    doc.setTextColor(150);
-    doc.text(
-      `${r.w} × ${r.h}`,
-      x + cellW / 2,
-      y + cellH - 1.5,
-      { align: "center" }
-    );
-  });
-
-  // ── Footer ───────────────────────────────────────────────────────
-  doc.setDrawColor(230);
-  doc.line(marginX, pageH - footerH, pageW - marginX, pageH - footerH);
-
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(8);
-  doc.setTextColor(140);
-  doc.text(
-    `Generated ${new Date().toLocaleDateString()}  ·  Print at 100% scale for accurate proportions`,
-    pageW / 2,
-    pageH - 5,
-    { align: "center" }
-  );
+  // Trailing metadata page footer note isn't added; the label per sheet plus
+  // the filename carry assembly context. Subtitle is reserved for the caller's
+  // filename composition.
+  void subtitle;
 
   doc.save(filename);
 }

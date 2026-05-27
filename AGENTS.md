@@ -8,7 +8,7 @@ AI-powered tattoo design platform for **in-shop use by staff (designers + admin)
 - **Auth:** Supabase Auth (email + password) via `@supabase/ssr` cookie-based sessions
 - **State:** Zustand with localStorage persistence + Supabase hydration (`src/store/app-store.ts`)
 - **Database & Storage:** Supabase PostgreSQL + Storage bucket `session-assets`
-- **Image Generation:** KEI API (`api.kie.ai`) — model `gpt-image-2-image-to-image`. NOT Claude or DALL-E.
+- **Image Generation:** KEI API (`api.kie.ai`). Design generation uses `gpt-image-2-image-to-image`; the final body-placement render uses `nano-banana-pro` (Gemini 3 Pro Image). NOT Claude or DALL-E.
 - **Styling:** Tailwind CSS v4. Dark luxury theme: bg `#0D0D0D`, gold `#C9A84C`, font Cinzel.
 
 ---
@@ -49,9 +49,9 @@ AI-powered tattoo design platform for **in-shop use by staff (designers + admin)
 ## API Routes
 | Route | Purpose |
 |-------|---------|
-| `POST /api/generate` | Fires 5 KEI tasks in parallel; **streams** NDJSON — each task emits `{type:"result"}` or `{type:"error"}` as it completes, followed by `{type:"done"}` |
+| `POST /api/generate` | Fires 5 KEI tasks (`gpt-image-2-image-to-image`) in parallel; **streams** NDJSON — each task emits `{type:"result"}` or `{type:"error"}` (with `code:"insufficient_credits"` when out of credits), followed by `{type:"done"}`. References: base64 in `images[]` (fresh uploads) + already-hosted URLs in `referenceImageUrls[]` (Pinterest pins) |
 | `POST /api/upload-ref` | Uploads base64 image to Supabase Storage. `prefix` param: `"refs"` (default) or `"designs"` (direct upload mode) |
-| `POST /api/placement` | Generates body+tattoo composite via KEI |
+| `POST /api/placement` | Generates body+tattoo composite via KEI `nano-banana-pro`. Returns `402` + `code:"insufficient_credits"` when out of credits (no retry); `504` timeout; `502` other |
 | `GET /api/pinterest/search` | Pinterest reference image search |
 | `GET /api/pinterest/image` | Pinterest image proxy (CORS bypass) |
 | `GET /api/proxy-image` | General image proxy |
@@ -59,7 +59,7 @@ AI-powered tattoo design platform for **in-shop use by staff (designers + admin)
 | `POST /api/studio/designers` | Create designer via Supabase Admin API (admin only) |
 | `PATCH /api/studio/designers` | Toggle `is_active` on a designer (admin only) |
 | `POST /api/studio/logout` | Sign out staff |
-| `GET /api/cron/cleanup` | Delete expired sessions (active + older than 3hr) + their storage files |
+| `GET /api/cron/cleanup` | Delete expired sessions (active + older than 24hr) + their storage files |
 
 ---
 
@@ -92,14 +92,15 @@ AI-powered tattoo design platform for **in-shop use by staff (designers + admin)
 
 ### Core Logic
 - `src/lib/prompts.ts` — **ALL AI prompts live here**: `buildInitialDesignPrompt`, `buildRefinementPrompt`, `buildTattooPrompt`, `buildPlacementPrompt`, `buildCompositePrompt`. Composite mode sends 3 images: composite (position) + tattoo design (detail) + body photo (skin/lighting).
-- `src/lib/kei-api.ts` — pure KEI HTTP client: `createKeiTask`, `waitForKeiTask`, `pollKeiTask`, `KeiTaskFailedError`. Re-exports `buildTattooPrompt` from prompts.ts.
+- `src/lib/kei-api.ts` — pure KEI HTTP client: `createKeiTask(prompt, urls, {model})` (model `gpt-image-2-image-to-image` default, or `nano-banana-pro`), `waitForKeiTask`, `pollKeiTask`, `KeiTaskFailedError`, `KeiCreditsError` (thrown on exhausted credits — non-retryable). Re-exports `buildTattooPrompt` from prompts.ts.
 - `src/lib/storage.ts` — `uploadBase64`, `uploadFromUrl` to Supabase Storage bucket `session-assets`
 - `src/lib/tattoo-colors.ts` — curated ink palette, `getColorsByHex`
-- `src/lib/tattoo-pdf.ts` — `downloadTattooSizesPdf` — client-side PDF with tattoo at multiple sizes
+- `src/lib/tattoo-pdf.ts` — **print/stencil engine**: `computeStencilLayout`, `defaultStencilCenter`, `loadTrimmedStencilImage` (auto-crops the design's empty frame to the actual ink), `downloadTattooStencilPdf` (tiles one tattoo across N A4 sheets → multi-page PDF, one sheet per page, with mirror + rotation). Grid: 1→1×1, 2→1×2, 4→2×2, 8→2×4.
 - `src/store/app-store.ts` — Zustand store: `designerId`, session lifecycle, design state, `persistDesigns`, `finalizeSession`, `hydrateFromSession`, `replaceReferenceImage`
 
 ### Components
-- `src/components/session/SessionOverview.tsx` — **shared read-only session detail view** used by admin and designer. Shows: session card, customer request, reference images, approved design, placement. Has PDF download. Takes `sessionId`, `backUrl`, `backLabel` props.
+- `src/components/session/SessionOverview.tsx` — **shared read-only session detail view** used by admin and designer. Shows: session card, customer request, reference images, approved design, placement. Header **Download** button opens the Print Studio. Takes `sessionId`, `backUrl`, `backLabel` props.
+- `src/components/print/TattooPrintStudio.tsx` — full-screen A4 print/stencil modal (replaces the old "Preview Sizes" PDF). Left "lightroom" canvas (drag to position the tattoo over the sheet grid) + right sidebar controls: A4 count (1/2/4/8), size %, rotation (0/90/180/270 + slider), mirror toggle (default ON — for skin transfer). Downloads a multi-page A4 PDF via `downloadTattooStencilPdf`.
 - `src/components/placement/TattooPlacementEditor.tsx` — canvas drag/scale/rotate overlay
 - `src/components/pinterest/PinterestSearch.tsx` — Pinterest reference search UI
 
@@ -118,7 +119,7 @@ AI-powered tattoo design platform for **in-shop use by staff (designers + admin)
 ---
 
 ## Session Cleanup (Cron)
-- `GET /api/cron/cleanup` — deletes `active` sessions older than 3 hours + all their Supabase Storage files (`refs/`, `designs/`, `body/`, `composites/`, `previews/`)
+- `GET /api/cron/cleanup` — deletes `active` sessions older than 24 hours + all their Supabase Storage files (`refs/`, `designs/`, `body/`, `composites/`, `previews/`)
 - Triggered by Supabase pg_cron via `pg_net.http_get()` every 30 minutes
 - Setup SQL: `supabase-cron-cleanup.sql`
 

@@ -9,6 +9,11 @@ import CameraCapture from "@/components/camera/CameraCapture";
 import TattooPlacementEditor from "@/components/placement/TattooPlacementEditor";
 import { blobUrlToBase64 } from "@/lib/image-utils";
 
+// Customer-facing copy when the AI image service is out of credits — vague on
+// purpose (no billing details), points to the actual fix (staff).
+const SERVICE_UNAVAILABLE_MSG =
+  "AI image generation is temporarily unavailable. Please notify studio staff to restore the service.";
+
 const QUICK_PLACEMENTS = [
   "Upper arm / bicep",
   "Forearm",
@@ -53,6 +58,9 @@ export default function PlacementPage({ params }: { params: Promise<{ sessionId:
   const [showCamera, setShowCamera] = useState(false);
   const [done, setDone] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // True when the failure was an exhausted-credits stop — suppresses the
+  // "transient, tap retry" framing and the Retry button.
+  const [creditsError, setCreditsError] = useState(false);
   // Composite from the interactive placement editor (base64 data URL)
   const [placementComposite, setPlacementComposite] = useState<string | null>(null);
   const [finalizing, setFinalizing] = useState(false);
@@ -120,6 +128,7 @@ export default function PlacementPage({ params }: { params: Promise<{ sessionId:
   async function handleGenerate() {
     if (!canGenerate || !selectedDesign) return;
     setError(null);
+    setCreditsError(false);
     generatePlacement();
 
     try {
@@ -153,7 +162,13 @@ export default function PlacementPage({ params }: { params: Promise<{ sessionId:
       });
 
       const json = await res.json();
-      if (!res.ok) throw new Error(json.error ?? "Placement generation failed");
+      if (!res.ok) {
+        if (json.code === "insufficient_credits") {
+          setCreditsError(true);
+          throw new Error(SERVICE_UNAVAILABLE_MSG);
+        }
+        throw new Error(json.error ?? "Placement generation failed");
+      }
 
       const compositeUrl = json.imageUrl as string;
       const bodyPhotoUrl = (json.bodyPhotoUrl as string | null) ?? undefined;
@@ -491,20 +506,29 @@ export default function PlacementPage({ params }: { params: Promise<{ sessionId:
 
             {/* Error */}
             {error && (
-              <div className="bg-error/10 border border-error/30 rounded-xl px-4 py-3 flex items-start gap-3">
+              <div className="bg-error/10 border border-error/40 rounded-xl px-4 py-3 flex items-start gap-3">
+                {creditsError && (
+                  <svg className="w-5 h-5 text-error flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
+                  </svg>
+                )}
                 <div className="flex-1 min-w-0">
-                  <p className="text-error text-xs font-mono leading-relaxed break-words">{error}</p>
-                  <p className="text-muted text-[10px] mt-1">
-                    This is usually a transient AI service issue. Tap Retry to try again.
-                  </p>
+                  <p className={`text-error text-xs leading-relaxed break-words ${creditsError ? "font-cinzel" : "font-mono"}`}>{error}</p>
+                  {!creditsError && (
+                    <p className="text-muted text-[10px] mt-1">
+                      This is usually a transient AI service issue. Tap Retry to try again.
+                    </p>
+                  )}
                 </div>
-                <button
-                  onClick={() => { setError(null); handleGenerate(); }}
-                  disabled={isGeneratingPlacement || !canGenerate}
-                  className="flex-shrink-0 bg-gold text-bg font-cinzel font-bold text-[10px] tracking-[0.1em] uppercase px-3 py-2 rounded-lg border border-gold hover:bg-gold-light transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  ↺ Retry
-                </button>
+                {!creditsError && (
+                  <button
+                    onClick={() => { setError(null); handleGenerate(); }}
+                    disabled={isGeneratingPlacement || !canGenerate}
+                    className="flex-shrink-0 bg-gold text-bg font-cinzel font-bold text-[10px] tracking-[0.1em] uppercase px-3 py-2 rounded-lg border border-gold hover:bg-gold-light transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    ↺ Retry
+                  </button>
+                )}
               </div>
             )}
 

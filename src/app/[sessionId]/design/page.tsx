@@ -13,6 +13,12 @@ import PinterestSearch from "@/components/pinterest/PinterestSearch";
 import { blobUrlToBase64 } from "@/lib/image-utils";
 import { TATTOO_COLORS } from "@/lib/tattoo-colors";
 
+// Customer-facing message when the AI image service is out of credits. Kept
+// deliberately vague (no "out of credits") — it points staff to the real fix
+// without exposing billing state to the customer.
+const SERVICE_UNAVAILABLE_MSG =
+  "AI image generation is temporarily unavailable. Please notify studio staff to restore the service.";
+
 export default function DesignPage({ params }: { params: Promise<{ sessionId: string }> }) {
   const { sessionId } = use(params);
   const router = useRouter();
@@ -37,7 +43,14 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
   const [lastPayload, setLastPayload] = useState<Record<string, unknown> | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const [totalSlots, setTotalSlots] = useState(5);
-  const [failedCount, setFailedCount] = useState(0);
+  // Per-slot failure tracking: each entry keeps the original stream `event.index`
+  // so the same slot can be retried (or fail again) without losing its identity.
+  const [failedSlots, setFailedSlots] = useState<Array<{ slotIndex: number; reason: string }>>([]);
+  // Slot indices currently being retried (count: 1 re-generation in flight).
+  const [retryingSlots, setRetryingSlots] = useState<Set<number>>(new Set());
+  // Set when KEI reports exhausted credits — disables retries and shows a clear,
+  // non-retryable banner instead of the generic "transient, tap retry" copy.
+  const [creditsExhausted, setCreditsExhausted] = useState(false);
   const prevDesignCountRef = useRef(0);
 
   // Tick elapsed seconds while a generation is in flight — used for the
@@ -262,7 +275,9 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
     const count = (payload.count as number) ?? 5;
     setGenError(null);
     setLastPayload(payload);
-    setFailedCount(0);
+    setFailedSlots([]);
+    setRetryingSlots(new Set());
+    setCreditsExhausted(false);
     setTotalSlots(count);
     prevDesignCountRef.current = 0;
     generateDesigns(); // clears generatedDesigns, sets isGenerating: true
@@ -294,7 +309,7 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
 
         for (const line of lines) {
           if (!line.trim()) continue;
-          let event: { type: string; index?: number; image?: { id: string; imageUrl: string }; reason?: string };
+          let event: { type: string; index?: number; image?: { id: string; imageUrl: string }; reason?: string; code?: string };
           try { event = JSON.parse(line); } catch { continue; }
 
           if (event.type === "result" && event.image) {
@@ -311,8 +326,10 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
               addGeneratedDesign(persisted ?? design);
             });
           } else if (event.type === "error") {
-            console.warn("[generate] slot failed:", event.reason);
-            setFailedCount((n) => n + 1);
+            const slotIndex = event.index ?? 0;
+            console.warn(`[generate] slot ${slotIndex} failed:`, event.reason);
+            if (event.code === "insufficient_credits") setCreditsExhausted(true);
+            setFailedSlots((prev) => [...prev, { slotIndex, reason: event.reason ?? "Generation failed" }]);
           } else if (event.type === "done") {
             finishGenerating(); // sets isGenerating: false, keeps accumulated designs
           }
@@ -329,14 +346,108 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
     if (lastPayload) callGenerateAPI(lastPayload);
   }
 
+  // Per-slot retry — fires a single-slot generation using the original payload
+  // and keeps the original slotIndex so the failed card can be re-shown if it
+  // fails again. Runs independently of the main stream; safe to invoke before
+  // or after the main generation has finished.
+  async function handleRetrySlot(slotIndex: number) {
+    if (!lastPayload || retryingSlots.has(slotIndex) || creditsExhausted) return;
+    setFailedSlots((prev) => prev.filter((s) => s.slotIndex !== slotIndex));
+    setRetryingSlots((prev) => {
+      const next = new Set(prev);
+      next.add(slotIndex);
+      return next;
+    });
+
+    try {
+      const res = await fetch("/api/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...lastPayload, count: 1 }),
+      });
+      if (!res.ok) {
+        const json = await res.json().catch(() => ({}));
+        throw new Error(json.error ?? `Retry failed (${res.status})`);
+      }
+
+      const reader = res.body!.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let gotResult = false;
+      let gotError: string | null = null;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          let event: { type: string; image?: { id: string; imageUrl: string }; reason?: string; code?: string };
+          try { event = JSON.parse(line); } catch { continue; }
+
+          if (event.type === "result" && event.image) {
+            // Slot the retried image into the same visual position as the
+            // failed card by using the original slotIndex for naming/palette.
+            const design: DesignVariant = {
+              id: event.image.id,
+              imageUrl: event.image.imageUrl,
+              gradient: gradients[slotIndex % gradients.length],
+              patternType: placeholders[slotIndex % placeholders.length],
+              styleName: `Variation ${slotIndex + 1}${tattooStyle ? ` — ${tattooStyle}` : ""}`,
+            };
+            persistDesigns([design]).then(([persisted]) => {
+              addGeneratedDesign(persisted ?? design);
+            });
+            gotResult = true;
+          } else if (event.type === "error") {
+            if (event.code === "insufficient_credits") setCreditsExhausted(true);
+            gotError = event.reason ?? "Generation failed";
+          }
+        }
+      }
+
+      if (!gotResult) {
+        setFailedSlots((prev) => [...prev, { slotIndex, reason: gotError ?? "No image returned" }]);
+      }
+    } catch (err) {
+      setFailedSlots((prev) => [...prev, { slotIndex, reason: (err as Error).message }]);
+    } finally {
+      setRetryingSlots((prev) => {
+        const next = new Set(prev);
+        next.delete(slotIndex);
+        return next;
+      });
+    }
+  }
+
+  // Split references into local (blob:/data: → needs base64 conversion) and
+  // already-hosted (https → pass through as URL). Pinterest pins start as blob URLs
+  // but are swapped to permanent Supabase URLs by replaceReferenceImage once their
+  // background upload completes — sending those as base64 corrupts them.
+  async function splitReferences(): Promise<{ images: string[]; urls: string[] }> {
+    const images: string[] = [];
+    const urls: string[] = [];
+    for (const ref of referenceImages) {
+      if (ref.startsWith("blob:") || ref.startsWith("data:")) {
+        images.push(await blobUrlToBase64(ref));
+      } else {
+        urls.push(ref);
+      }
+    }
+    return { images, urls };
+  }
+
   async function handleGenerate() {
     if (!canGenerate) return;
-    const b64Images: string[] = await Promise.all(referenceImages.map(blobUrlToBase64));
+    const { images, urls } = await splitReferences();
     callGenerateAPI({
       sessionId,
       description: tattooDescription,
       style: tattooStyle,
-      images: b64Images,
+      images,
+      referenceImageUrls: urls,
       colors: selectedColors,
       count: 5,
     });
@@ -350,13 +461,14 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
       .filter((url): url is string => !!url);
 
     const selectedDesignNames = selectedDesigns.map((d) => d.styleName);
-    const b64Images: string[] = await Promise.all(referenceImages.map(blobUrlToBase64));
+    const { images, urls } = await splitReferences();
 
     callGenerateAPI({
       sessionId,
       description: tattooDescription,
       style: tattooStyle,
-      images: b64Images,
+      images,
+      referenceImageUrls: urls,
       refineImageUrls,
       refinementText,
       selectedDesignNames,
@@ -899,8 +1011,18 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
             </AnimatePresence>
           </div>
 
+          {/* Service-unavailable (out of credits) — non-retryable, no Retry button */}
+          {creditsExhausted && (
+            <div className="bg-error/10 border border-error/40 rounded-xl px-4 py-3 flex items-start gap-3">
+              <svg className="w-5 h-5 text-error flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
+              </svg>
+              <p className="text-error text-xs font-cinzel leading-relaxed">{SERVICE_UNAVAILABLE_MSG}</p>
+            </div>
+          )}
+
           {/* Error */}
-          {genError && !isGenerating && (
+          {genError && !isGenerating && !creditsExhausted && (
             <div className="bg-error/10 border border-error/30 rounded-xl px-4 py-3 flex items-start gap-3">
               <div className="flex-1 min-w-0">
                 <p className="text-error text-xs font-mono leading-relaxed break-words">{genError}</p>
@@ -1008,15 +1130,17 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
                     {iterationCount > 1 ? `Refined Designs — Pass ${iterationCount}` : "Your Designs"}
                   </h2>
                   <p className="text-muted text-[11px] sm:text-xs mt-0.5 leading-snug">
-                    {isGenerating
+                    {hasSelection
+                      ? isGenerating
+                        ? `${selectedDesigns.length} selected — proceed now or wait for the rest`
+                        : `${selectedDesigns.length} selected — refine or proceed`
+                      : isGenerating
                       ? `${generatedDesigns.length} of ${totalSlots} ready · still generating…`
-                      : hasSelection
-                      ? `${selectedDesigns.length} selected — refine or proceed`
                       : "Tap a design to view it full-size, then select"}
                   </p>
                 </div>
                 <div className="flex items-center gap-1.5 sm:gap-2 flex-shrink-0">
-                  {hasSelection && !isGenerating && (
+                  {hasSelection && (
                     <motion.button
                       initial={{ opacity: 0, scale: 0.9 }}
                       animate={{ opacity: 1, scale: 1 }}
@@ -1027,14 +1151,14 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
                     </motion.button>
                   )}
                   <span className={`text-[10px] font-mono px-2 sm:px-2.5 py-1 rounded-full border whitespace-nowrap transition-colors ${
-                    hasSelection && !isGenerating
+                    hasSelection
                       ? "text-gold border-gold/40 bg-gold/10"
                       : "text-muted border-cleo-border"
                   }`}>
-                    {isGenerating
-                      ? `${generatedDesigns.length} / ${totalSlots}`
-                      : hasSelection
+                    {hasSelection
                       ? `${selectedDesigns.length} / 4`
+                      : isGenerating
+                      ? `${generatedDesigns.length} / ${totalSlots}`
                       : `${generatedDesigns.length} variation${generatedDesigns.length === 1 ? "" : "s"}`}
                   </span>
                 </div>
@@ -1055,12 +1179,11 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
                       initial={{ opacity: 0, scale: 0.88, y: 14 }}
                       animate={{ opacity: 1, scale: 1, y: 0 }}
                       transition={{ duration: 0.38, ease: [0.16, 1, 0.3, 1] }}
-                      whileHover={!isGenerating ? { scale: 1.03, y: -3 } : {}}
-                      whileTap={!isGenerating ? { scale: 0.97 } : {}}
-                      onClick={() => { if (!isGenerating) setViewingIndex(i); }}
+                      whileHover={{ scale: 1.03, y: -3 }}
+                      whileTap={{ scale: 0.97 }}
+                      onClick={() => setViewingIndex(i)}
                       className={[
-                        "relative rounded-2xl overflow-hidden text-left border-2 transition-all duration-250",
-                        isGenerating ? "cursor-default" : "cursor-pointer group",
+                        "relative rounded-2xl overflow-hidden text-left border-2 transition-all duration-250 cursor-pointer group",
                         isSelected
                           ? "border-gold shadow-[0_0_20px_rgba(201,168,76,0.45)]"
                           : "border-cleo-border hover:border-gold/40",
@@ -1079,7 +1202,7 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
                             <span className="text-bg text-xs font-black font-mono">{selectionOrder}</span>
                           </motion.div>
                         ) : (
-                          !isGenerating && <div className="absolute top-2 right-2 w-6 h-6 rounded-full border-2 border-white/30 bg-black/30 backdrop-blur-sm" />
+                          <div className="absolute top-2 right-2 w-6 h-6 rounded-full border-2 border-white/30 bg-black/30 backdrop-blur-sm" />
                         )}
                         <div className="absolute top-2 left-2">
                           <span className="bg-black/60 backdrop-blur-sm text-ink/70 text-[9px] font-mono px-1.5 py-0.5 rounded">
@@ -1087,28 +1210,30 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
                           </span>
                         </div>
                         {isSelected && <div className="absolute inset-0 ring-2 ring-inset ring-gold/30 rounded-t-2xl pointer-events-none" />}
-                        {!isGenerating && (
-                          <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-colors flex items-center justify-center pointer-events-none">
-                            <span className="opacity-0 group-hover:opacity-100 transition-opacity bg-gold text-bg font-cinzel text-[10px] font-bold tracking-[0.1em] uppercase px-3 py-1.5 rounded-lg shadow-lg">
-                              🔍 View
-                            </span>
-                          </div>
-                        )}
+                        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-colors flex items-center justify-center pointer-events-none">
+                          <span className="opacity-0 group-hover:opacity-100 transition-opacity bg-gold text-bg font-cinzel text-[10px] font-bold tracking-[0.1em] uppercase px-3 py-1.5 rounded-lg shadow-lg">
+                            🔍 View
+                          </span>
+                        </div>
                       </div>
                       <div className={`px-3 py-2.5 transition-colors ${isSelected ? "bg-gold/10" : "bg-surface"}`}>
                         <p className={`text-xs font-cinzel font-bold leading-tight ${isSelected ? "text-gold" : "text-ink"}`}>
                           {design.styleName}
                         </p>
                         <p className="text-muted text-[10px] mt-0.5">
-                          {isGenerating ? "Ready" : isSelected ? `Selected #${selectionOrder}` : canSelect ? "Tap to view" : "Tap to view"}
+                          {isSelected ? `Selected #${selectionOrder}` : canSelect ? "Tap to view" : "Tap to view"}
                         </p>
                       </div>
                     </motion.button>
                   );
                 })}
 
-                {/* Skeleton placeholders for pending slots */}
-                {isGenerating && Array.from({ length: Math.max(0, totalSlots - generatedDesigns.length - failedCount) }).map((_, i) => (
+                {/* Skeleton placeholders for slots still being generated.
+                    Only shown during the initial streaming pass (isGenerating);
+                    per-slot retries render their own retrying skeleton below. */}
+                {isGenerating && Array.from({
+                  length: Math.max(0, totalSlots - generatedDesigns.length - failedSlots.length - retryingSlots.size),
+                }).map((_, i) => (
                   <div key={`skeleton-${i}`} className="rounded-2xl overflow-hidden border-2 border-cleo-border">
                     <div className="aspect-square skeleton" />
                     <div className="p-3 bg-surface flex flex-col gap-1.5">
@@ -1118,47 +1243,58 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
                   </div>
                 ))}
 
-                {/* Failed slot cards */}
-                {isGenerating && failedCount > 0 && Array.from({ length: failedCount }).map((_, i) => (
-                  <div key={`failed-${i}`} className="rounded-2xl overflow-hidden border-2 border-error/30 bg-surface">
+                {/* Retrying-slot skeletons — one per slot whose Retry button was clicked */}
+                {Array.from(retryingSlots).map((idx) => (
+                  <div key={`retrying-${idx}`} className="rounded-2xl overflow-hidden border-2 border-gold/30">
+                    <div className="aspect-square skeleton relative">
+                      <div className="absolute inset-0 flex items-center justify-center">
+                        <div className="w-7 h-7 border-2 border-gold border-t-transparent rounded-full animate-spin" />
+                      </div>
+                    </div>
+                    <div className="p-3 bg-surface flex flex-col gap-1.5">
+                      <p className="text-gold text-[10px] font-mono">Retrying…</p>
+                      <div className="h-2 skeleton rounded w-1/2" />
+                    </div>
+                  </div>
+                ))}
+
+                {/* Failed slot cards with per-slot Retry button */}
+                {failedSlots.map((slot) => (
+                  <div key={`failed-${slot.slotIndex}`} className="rounded-2xl overflow-hidden border-2 border-error/30 bg-surface">
                     <div className="aspect-square bg-error/5 flex flex-col items-center justify-center gap-2 p-3">
                       <svg className="w-6 h-6 text-error/50" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                         <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
                       </svg>
-                      <p className="text-error/60 text-[10px] font-mono text-center">Failed</p>
+                      <p className="text-error/60 text-[10px] font-mono text-center">
+                        {creditsExhausted ? "Unavailable" : "Failed"}
+                      </p>
+                      {!creditsExhausted && (
+                        <button
+                          onClick={() => handleRetrySlot(slot.slotIndex)}
+                          className="bg-gold text-bg font-cinzel font-bold text-[10px] tracking-[0.1em] uppercase px-3 py-1.5 rounded-lg border border-gold hover:bg-gold-light transition-colors cursor-pointer mt-1"
+                        >
+                          ↺ Retry
+                        </button>
+                      )}
                     </div>
                     <div className="p-3 bg-surface">
-                      <p className="text-error/50 text-[10px] font-mono">Generation failed</p>
+                      <p className="text-error/50 text-[10px] font-mono truncate" title={slot.reason}>
+                        {creditsExhausted ? `#${slot.slotIndex + 1} — service unavailable` : `#${slot.slotIndex + 1} — ${slot.reason}`}
+                      </p>
                     </div>
                   </div>
                 ))}
               </div>
-
-              {/* Failed slots banner after generation completes */}
-              {!isGenerating && failedCount > 0 && (
-                <motion.div
-                  initial={{ opacity: 0, y: 6 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  className="bg-error/10 border border-error/30 rounded-xl px-4 py-3 flex items-center justify-between gap-3"
-                >
-                  <p className="text-error text-xs font-mono">
-                    {failedCount} variation{failedCount > 1 ? "s" : ""} failed to generate
-                  </p>
-                  <button
-                    onClick={handleRetryGenerate}
-                    className="flex-shrink-0 bg-gold text-bg font-cinzel font-bold text-[10px] tracking-[0.1em] uppercase px-3 py-2 rounded-lg border border-gold hover:bg-gold-light transition-colors cursor-pointer"
-                  >
-                    ↺ Retry All
-                  </button>
-                </motion.div>
-              )}
             </motion.div>
           )}
         </AnimatePresence>
 
         {/* ── Refinement + Proceed panel ──────────────────────────── */}
+        {/* Shown whenever the user has selected at least one design — including
+            while other slots are still streaming. Refine stays disabled during
+            generation (refining would wipe the in-flight stream). */}
         <AnimatePresence>
-          {hasSelection && !isGenerating && (
+          {hasSelection && (
             <motion.div
               key="refinement"
               ref={refinementRef}
@@ -1240,12 +1376,13 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
                 {/* Inline buttons — hidden on mobile in favour of the sticky footer */}
                 <div className="hidden sm:flex flex-col sm:flex-row gap-3">
                   <motion.button
-                    whileHover={refinementText.trim() ? { scale: 1.02 } : {}}
-                    whileTap={refinementText.trim() ? { scale: 0.97 } : {}}
+                    whileHover={refinementText.trim() && !isGenerating ? { scale: 1.02 } : {}}
+                    whileTap={refinementText.trim() && !isGenerating ? { scale: 0.97 } : {}}
                     onClick={handleRefine}
-                    disabled={!refinementText.trim()}
+                    disabled={!refinementText.trim() || isGenerating}
+                    title={isGenerating ? "Wait for generation to finish before refining" : undefined}
                     className={`flex-1 py-3.5 rounded-xl font-cinzel font-bold text-sm tracking-wide uppercase border transition-all ${
-                      refinementText.trim()
+                      refinementText.trim() && !isGenerating
                         ? "bg-surface-2 border-gold/40 text-gold hover:bg-gold/10 cursor-pointer"
                         : "bg-surface-2 border-cleo-border text-muted cursor-not-allowed"
                     }`}
@@ -1283,22 +1420,16 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
           Mirrors the primary action for the current state so the user
           never has to scroll back up. Inline desktop buttons remain. */}
       <div className="sm:hidden fixed bottom-0 inset-x-0 z-30 bg-bg/95 backdrop-blur-md border-t border-cleo-border px-4 pt-3 pb-safe">
-        {isGenerating ? (
-          <button
-            disabled
-            className="w-full py-3.5 rounded-xl font-cinzel font-bold text-sm tracking-[0.08em] uppercase bg-surface-2 text-muted border border-cleo-border cursor-not-allowed"
-          >
-            {generatedDesigns.length > 0
-              ? `${generatedDesigns.length} of ${totalSlots} ready…`
-              : "Generating…"}
-          </button>
-        ) : hasSelection ? (
+        {/* Order matters: selection wins over generation status so the user can
+            proceed as soon as they've picked a design, even if other slots
+            haven't streamed in yet. */}
+        {hasSelection ? (
           <div className="flex gap-2">
             <button
               onClick={handleRefine}
-              disabled={!refinementText.trim()}
+              disabled={!refinementText.trim() || isGenerating}
               className={`flex-1 py-3 rounded-xl font-cinzel font-bold text-[11px] tracking-[0.06em] uppercase border transition-colors ${
-                refinementText.trim()
+                refinementText.trim() && !isGenerating
                   ? "bg-surface-2 border-gold/40 text-gold cursor-pointer"
                   : "bg-surface-2 border-cleo-border text-muted/50 cursor-not-allowed"
               }`}
@@ -1312,6 +1443,15 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
               ✦ Proceed →
             </button>
           </div>
+        ) : isGenerating ? (
+          <button
+            disabled
+            className="w-full py-3.5 rounded-xl font-cinzel font-bold text-sm tracking-[0.08em] uppercase bg-surface-2 text-muted border border-cleo-border cursor-not-allowed"
+          >
+            {generatedDesigns.length > 0
+              ? `${generatedDesigns.length} of ${totalSlots} ready…`
+              : "Generating…"}
+          </button>
         ) : (
           <button
             onClick={handleGenerate}

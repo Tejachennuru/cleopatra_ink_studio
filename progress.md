@@ -1,12 +1,12 @@
 # Cleopatra Ink Studio — Progress Tracker
 
-_Last updated: 2026-05-23_
+_Last updated: 2026-05-27_
 
 ---
 
-## Overall Status: **RBAC Complete — Core Platform Functional**
+## Overall Status: **Core Platform + Print Studio Functional**
 
-Full staff login system, role-based access, customer management, session overview, and cron cleanup are all live. The main remaining gap is the stencil editor UI.
+Full staff login system, role-based access, customer management, session overview, cron cleanup, streaming generation, and the A4 print/stencil studio are all live.
 
 ---
 
@@ -66,7 +66,7 @@ Full staff login system, role-based access, customer management, session overvie
 ### Shared Session Overview
 - [x] `src/components/session/SessionOverview.tsx` — single reusable component used by admin + designer
   - Sections: session card, customer request (style + prompt), reference images (from Storage), approved design, placement (body photo + composite)
-  - PDF "Preview Sizes" download button in header
+  - Header "Download" button opens the Print Studio (A4 stencil layout)
   - Lightbox for every image (click to zoom)
   - Props: `sessionId`, `backUrl`, `backLabel`
 - [x] `/studio/sessions/[id]` — designer/shared wrapper (server component, reads `?from=`)
@@ -100,7 +100,7 @@ Full staff login system, role-based access, customer management, session overvie
 - [x] Admin `SessionOverview` now lists Pinterest reference images correctly from Storage
 
 ### Session Cleanup (Cron)
-- [x] `GET /api/cron/cleanup` — finds `active` sessions older than 3hr, deletes Storage files (`refs/`, `designs/`, `body/`, `composites/`, `previews/`), deletes session rows (cascade)
+- [x] `GET /api/cron/cleanup` — finds `active` sessions older than 24hr, deletes Storage files (`refs/`, `designs/`, `body/`, `composites/`, `previews/`), deletes session rows (cascade)
 - [x] Cron setup SQL included in `supabase-schema.sql` (commented section at bottom)
 - [x] `CRON_SECRET` env var for request validation
 
@@ -137,6 +137,33 @@ Full staff login system, role-based access, customer management, session overvie
 - [x] `app-store.ts` — added `addGeneratedDesign(design)` action; `generateDesigns()` now clears previous designs on start; `finishGenerating(designs?)` keeps accumulated designs when called with no args
 - [x] Design page — reads the stream line-by-line and appends each image immediately via `addGeneratedDesign`; shows skeleton placeholder cards for pending slots; shows warning cards for failed slots; displays "X of 5 ready · still generating…" status while streaming; failed slots banner with "Retry All" after completion
 
+### Print / Stencil Studio (A4)
+- [x] `src/components/print/TattooPrintStudio.tsx` — full-screen modal replacing the old "Preview Sizes" PDF. Left "lightroom" canvas + right sidebar controls
+- [x] A4 sheet count (1/2/4/8) — one tattoo tiled across the grid (portrait-leaning: 1→1×1, 2→1×2, 4→2×2, 8→2×4)
+- [x] Size % slider (20–200%) referenced to A4; rotation (0/90/180/270 buttons + fine slider); mirror toggle (default ON — flips for skin transfer so text reads correctly once applied)
+- [x] Drag the tattoo to reposition over the sheet grid; preview clipped to the grid (off-sheet content won't print); preview is WYSIWYG for the PDF (same mirror→rotate→center transform)
+- [x] `src/lib/tattoo-pdf.ts` rewritten: `computeStencilLayout`, `defaultStencilCenter`, `loadTrimmedStencilImage` (auto-crops the design's empty frame to the actual ink so sizing tracks the real tattoo, not the square frame), `downloadTattooStencilPdf` (multi-page A4 PDF, one sheet per page at 150 DPI, faint assembly labels). Old `downloadTattooSizesPdf` removed
+- [x] Fixed preview "stops scaling / drifts left past 100%" — Tailwind Preflight's `img { max-width: 100% }` was capping the element; overridden with `maxWidth/maxHeight: none` on the preview image
+
+### Placement → Nano Banana Pro
+- [x] Final body-placement render switched to KEI `nano-banana-pro` (Gemini 3 Pro Image) for higher photorealism; design generation stays `gpt-image-2-image-to-image`
+- [x] `createKeiTask(prompt, urls, {model})` — maps `image_input` (nano-banana-pro) vs `input_urls` (gpt-image) field names
+
+### Insufficient-Credits Handling
+- [x] `KeiCreditsError` in `kei-api.ts` — thrown on 402 / credit / balance / quota messages at createTask or poll; never retried
+- [x] `/api/generate` tags failed slots with `code:"insufficient_credits"`; `/api/placement` returns `402` + same code (no wasted retry)
+- [x] Both design + placement UIs show a clear, non-retryable "AI image generation temporarily unavailable — notify staff" message and hide the Retry button for this case
+
+### Pinterest Reference Bug Fix
+- [x] After a Pinterest pin's background upload swapped its blob URL → permanent Supabase URL, generation sent that URL through `uploadBase64` and produced empty/garbage reference files. Fixed: design page splits references into base64 (`images[]`) vs already-hosted URLs (`referenceImageUrls[]`); `/api/generate` appends hosted URLs directly. `blobUrlToBase64` now throws on remote URLs instead of silently passing them through
+
+### Generation UX — Per-Slot Retry & Proceed-While-Generating
+- [x] Failed slots tracked individually (`failedSlots[]`) with a per-card **Retry** that re-fires a single `count:1` task; replaced the old "Retry All" banner
+- [x] User can select a ready design and proceed to placement while other slots are still streaming (removed the `isGenerating` gate on selection/proceed); Refine/Regenerate stay disabled mid-stream (they clear state)
+
+### Session TTL Extended
+- [x] Cron cleanup TTL raised from 3hr → 24hr so in-progress sessions aren't wiped mid-use
+
 ### Dead Code Removed
 - [x] `/new/page.tsx` — orphaned customer intake page (designer dashboard has same logic inline)
 - [x] `/returning/page.tsx` — orphaned phone lookup page (designer dashboard has same logic inline)
@@ -150,9 +177,8 @@ Full staff login system, role-based access, customer management, session overvie
 
 ## Not Started / Remaining
 
-- [ ] **Stencil editor UI** — `src/lib/tattoo-pdf.ts` exists but no `/[sessionId]/stencil` page; no line-art conversion, sizing controls, or print UI
-- [ ] Multi-page stencil tiling for oversized tattoos
-- [ ] SVG/vector export from stencil editor
+- [ ] Line-art / stencil edge conversion (current studio prints the design as-is, no thresholding to clean linework)
+- [ ] SVG/vector export from the print studio
 - [ ] AR camera overlay (real-time body preview)
 - [ ] Appointment booking integration
 

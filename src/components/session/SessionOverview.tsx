@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import Link from "next/link";
 import { createSupabaseBrowserClient } from "@/lib/supabase-client";
-import { downloadTattooSizesPdf } from "@/lib/tattoo-pdf";
+import TattooPrintStudio from "@/components/print/TattooPrintStudio";
 
 // ── Types ─────────────────────────────────────────────────────
 
@@ -89,8 +89,7 @@ export default function SessionOverview({ sessionId, backUrl, backLabel }: Sessi
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
   const [lightbox, setLightbox] = useState<string | null>(null);
-  const [downloadingPdf, setDownloadingPdf] = useState(false);
-  const [pdfError, setPdfError] = useState<string | null>(null);
+  const [printOpen, setPrintOpen] = useState(false);
 
   useEffect(() => {
     async function load() {
@@ -129,23 +128,6 @@ export default function SessionOverview({ sessionId, backUrl, backLabel }: Sessi
     load();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
-
-  async function handleDownloadPdf(design: DesignRow, sessionData: SessionDetail) {
-    if (downloadingPdf) return;
-    setDownloadingPdf(true);
-    setPdfError(null);
-    try {
-      await downloadTattooSizesPdf({
-        imageUrl: design.image_url,
-        subtitle: `${sessionData.tattoo_style ?? design.style_name ?? "Custom"} · Session #${sessionData.id}`,
-        filename: `tattoo-sizes-${sessionData.id}.pdf`,
-      });
-    } catch (err) {
-      setPdfError((err as Error).message);
-    } finally {
-      setDownloadingPdf(false);
-    }
-  }
 
   // ── Loading ──────────────────────────────────────────────────
   if (loading) {
@@ -194,21 +176,16 @@ export default function SessionOverview({ sessionId, backUrl, backLabel }: Sessi
         <span className="text-cleo-border">/</span>
         <span className="text-muted text-xs font-mono truncate">Session #{sessionId}</span>
         <div className="ml-auto flex items-center gap-3">
-          {/* Preview Sizes PDF download */}
+          {/* Download — opens the print studio (A4 stencil layout) */}
           {finalDesign && (
             <button
-              onClick={() => handleDownloadPdf(finalDesign, session)}
-              disabled={downloadingPdf}
-              className="h-8 px-3 rounded-lg bg-gold/95 border border-gold text-bg font-cinzel font-bold text-[10px] tracking-[0.1em] uppercase hover:bg-gold-light transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shadow-[0_0_16px_rgba(201,168,76,0.25)]"
+              onClick={() => setPrintOpen(true)}
+              className="h-8 px-3 rounded-lg bg-gold/95 border border-gold text-bg font-cinzel font-bold text-[10px] tracking-[0.1em] uppercase hover:bg-gold-light transition-colors flex items-center gap-1.5 cursor-pointer shadow-[0_0_16px_rgba(201,168,76,0.25)]"
             >
-              {downloadingPdf ? (
-                <span className="w-3 h-3 border-2 border-bg/40 border-t-bg rounded-full animate-spin" />
-              ) : (
-                <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5 5-5M12 15V3" />
-                </svg>
-              )}
-              <span className="hidden sm:inline">{downloadingPdf ? "Preparing…" : "Preview Sizes"}</span>
+              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5 5-5M12 15V3" />
+              </svg>
+              <span className="hidden sm:inline">Download</span>
               <span className="sm:hidden">PDF</span>
             </button>
           )}
@@ -218,18 +195,15 @@ export default function SessionOverview({ sessionId, backUrl, backLabel }: Sessi
         </div>
       </header>
 
-      {/* PDF error toast */}
+      {/* Print studio modal */}
       <AnimatePresence>
-        {pdfError && (
-          <motion.div
-            initial={{ opacity: 0, y: -8 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -8 }}
-            className="mx-4 sm:mx-6 mt-3 bg-error/10 border border-error/40 rounded-xl px-4 py-2.5 flex items-center justify-between gap-3"
-          >
-            <p className="text-error text-xs font-mono">{pdfError}</p>
-            <button onClick={() => setPdfError(null)} className="text-error/70 hover:text-error text-sm">×</button>
-          </motion.div>
+        {printOpen && finalDesign && (
+          <TattooPrintStudio
+            imageUrl={finalDesign.image_url}
+            subtitle={`${session.tattoo_style ?? finalDesign.style_name ?? "Custom"} · Session #${session.id}`}
+            filenameBase={`tattoo-stencil-${session.id}`}
+            onClose={() => setPrintOpen(false)}
+          />
         )}
       </AnimatePresence>
 

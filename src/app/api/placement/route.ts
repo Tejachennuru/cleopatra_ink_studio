@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createKeiTask, waitForKeiTask, KeiTaskFailedError } from "@/lib/kei-api";
+import { createKeiTask, waitForKeiTask, KeiTaskFailedError, KeiCreditsError } from "@/lib/kei-api";
 import { buildPlacementPrompt, buildCompositePrompt } from "@/lib/prompts";
 import { uploadBase64, uploadFromUrl } from "@/lib/storage";
 
@@ -7,7 +7,7 @@ export const maxDuration = 300;
 
 type KeiRunResult =
   | { ok: true; url: string; taskId: string }
-  | { ok: false; kind: "failed" | "timeout" | "error"; reason: string; taskId?: string };
+  | { ok: false; kind: "failed" | "timeout" | "error" | "credits"; reason: string; taskId?: string };
 
 // Final body-placement image is rendered with Gemini 3 Pro Image (nano-banana-pro)
 // via KEI for higher photorealism. Design generation still uses gpt-image.
@@ -21,6 +21,9 @@ async function runKeiOnce(prompt: string, inputUrls: string[]): Promise<KeiRunRe
     const url = await waitForKeiTask(taskId);
     return { ok: true, url, taskId };
   } catch (err) {
+    if (err instanceof KeiCreditsError) {
+      return { ok: false, kind: "credits", reason: err.message };
+    }
     if (err instanceof KeiTaskFailedError) {
       return { ok: false, kind: "failed", reason: err.failMsg ?? err.message, taskId: err.taskId };
     }
@@ -31,13 +34,19 @@ async function runKeiOnce(prompt: string, inputUrls: string[]): Promise<KeiRunRe
 }
 
 // Up to two attempts: one retry on real failures (KEI 5xx, "Internal Error",
-// moderation flake). Timeouts are not retried — KEI is congested, retry would
-// just queue the same job and burn the request budget.
+// moderation flake). Timeouts and credits errors are not retried — a retry
+// would just queue the same doomed job and burn the request budget.
 async function runKeiWithRetry(prompt: string, inputUrls: string[]): Promise<KeiRunResult> {
   const first = await runKeiOnce(prompt, inputUrls);
-  if (first.ok || first.kind === "timeout") return first;
+  if (first.ok || first.kind === "timeout" || first.kind === "credits") return first;
   console.warn(`[placement] KEI ${first.kind} (${first.reason}) — retrying once`);
   return runKeiOnce(prompt, inputUrls);
+}
+
+function statusForKind(kind: "failed" | "timeout" | "error" | "credits"): number {
+  if (kind === "credits") return 402;
+  if (kind === "timeout") return 504;
+  return 502;
 }
 
 
@@ -82,8 +91,13 @@ export async function POST(req: NextRequest) {
     const result = await runKeiWithRetry(buildCompositePrompt(), inputUrls);
     if (!result.ok) {
       return NextResponse.json(
-        { error: result.reason, kind: result.kind, taskId: result.taskId },
-        { status: result.kind === "timeout" ? 504 : 502 }
+        {
+          error: result.reason,
+          kind: result.kind,
+          ...(result.kind === "credits" ? { code: "insufficient_credits" } : {}),
+          taskId: result.taskId,
+        },
+        { status: statusForKind(result.kind) }
       );
     }
 
@@ -119,8 +133,13 @@ export async function POST(req: NextRequest) {
   const result = await runKeiWithRetry(prompt, inputUrls);
   if (!result.ok) {
     return NextResponse.json(
-      { error: result.reason, kind: result.kind, taskId: result.taskId },
-      { status: result.kind === "timeout" ? 504 : 502 }
+      {
+        error: result.reason,
+        kind: result.kind,
+        ...(result.kind === "credits" ? { code: "insufficient_credits" } : {}),
+        taskId: result.taskId,
+      },
+      { status: statusForKind(result.kind) }
     );
   }
 

@@ -26,9 +26,15 @@ export async function toJpegBase64(source: Blob, quality = 0.92): Promise<string
   });
 }
 
-/** Reads a blob:// URL and converts it to a JPEG base64 data URI. */
+/** Reads a blob:// URL (or data: URI) and converts it to a JPEG base64 data URI.
+ *  Callers must NOT pass remote https:// URLs — those should be sent to the API as
+ *  hosted reference URLs instead. Treating them as base64 silently corrupts uploads
+ *  (Buffer.from(url, "base64") produces garbage bytes server-side). */
 export async function blobUrlToBase64(blobUrl: string): Promise<string> {
-  if (!blobUrl.startsWith("blob:")) return blobUrl;
+  if (blobUrl.startsWith("data:")) return blobUrl;
+  if (!blobUrl.startsWith("blob:")) {
+    throw new Error(`blobUrlToBase64: expected blob:/data: URL, got ${blobUrl.slice(0, 32)}…`);
+  }
   const res = await fetch(blobUrl);
   const blob = await res.blob();
   return toJpegBase64(blob);
