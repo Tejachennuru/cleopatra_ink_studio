@@ -55,9 +55,11 @@ AI-powered tattoo design platform for **in-shop use by staff (designers + admin)
 | `GET /api/pinterest/search` | Pinterest reference image search |
 | `GET /api/pinterest/image` | Pinterest image proxy (CORS bypass) |
 | `GET /api/proxy-image` | General image proxy |
-| `GET /api/studio/designers` | List all staff (admin only) |
+| `GET /api/studio/designers` | List all staff, excluding soft-deleted (admin only) |
 | `POST /api/studio/designers` | Create designer via Supabase Admin API (admin only) |
 | `PATCH /api/studio/designers` | Toggle `is_active` on a designer (admin only) |
+| `PUT /api/studio/designers` | Reset a designer's password — applied to Supabase Auth only, never stored. Blocks self / admin / soft-deleted targets (admin only) |
+| `DELETE /api/studio/designers` | Soft-delete a designer: sets `deleted_at = now()` + `is_active = false`. Staff row is preserved so historical sessions still resolve "designed by X". Blocks self / admin (admin only) |
 | `POST /api/studio/logout` | Sign out staff |
 | `GET /api/cron/cleanup` | Delete expired sessions (active + older than 24hr) + their storage files |
 
@@ -68,9 +70,9 @@ AI-powered tattoo design platform for **in-shop use by staff (designers + admin)
 | Table | Key columns |
 |-------|-------------|
 | `auth.users` | Supabase Auth — staff login accounts |
-| `staff` | `id` (= auth.users.id), `email`, `name`, `role` (admin\|designer), `is_active`, `last_login` |
+| `staff` | `id` (= auth.users.id), `email`, `name`, `role` (admin\|designer), `is_active`, `last_login`, `deleted_at` (soft-delete marker — non-null hides the row from the admin list & blocks login; the row is kept so historical "designed by X" still resolves) |
 | `users` | `id`, `first_name`, `phone` — customers (no auth, identified by phone) |
-| `sessions` | `id`, `user_id`, `designer_id`, `tattoo_style`, `tattoo_description`, `status`, `created_at`, `completed_at` |
+| `sessions` | `id`, `user_id`, `designer_id`, `tattoo_style`, `tattoo_description`, `target_body_area` (optional design-time hint, fed into the generation prompt), `status`, `created_at`, `completed_at` |
 | `tattoo_designs` | `id`, `session_id`, `image_url`, `style_name`, `pattern_type`, `iteration`, `is_finalized` |
 | `placements` | `id`, `session_id`, `placement_text`, `body_photo_url`, `final_composite_url`, `is_finalized` |
 | `user_preferences` | `user_id`, `preferred_styles[]`, `preferred_placements[]` |
@@ -84,19 +86,19 @@ AI-powered tattoo design platform for **in-shop use by staff (designers + admin)
 ## Key Files
 
 ### Auth & Security
-- `middleware.ts` — runs on every request; blocks unauthenticated → `/studio/login`; blocks designers from `/studio/admin/*`; enforces 24hr session timeout via `last_login`
+- `middleware.ts` — runs on every request; blocks unauthenticated → `/studio/login`; blocks designers from `/studio/admin/*`; enforces 24hr session timeout via `last_login`; rejects soft-deleted designers (`deleted_at != null`)
 - `src/lib/supabase-server.ts` — server-only: `createSupabaseServerClient`, `createServiceClient`, `getStaffSession`
 - `src/lib/supabase-client.ts` — browser-only: `createSupabaseBrowserClient` (cookie-based, safe in `"use client"`)
 - `src/lib/staff-types.ts` — `StaffMember`, `StaffRole` types (safe to import anywhere)
 - `src/lib/auth-utils.ts` — `getClientRole()`, `resolveBackUrl()` — role-validated back navigation
 
 ### Core Logic
-- `src/lib/prompts.ts` — **ALL AI prompts live here**: `buildInitialDesignPrompt`, `buildRefinementPrompt`, `buildTattooPrompt`, `buildPlacementPrompt`, `buildCompositePrompt`. Composite mode sends 3 images: composite (position) + tattoo design (detail) + body photo (skin/lighting).
+- `src/lib/prompts.ts` — **ALL AI prompts live here**: `buildInitialDesignPrompt`, `buildRefinementPrompt`, `buildTattooPrompt`, `buildPlacementPrompt`, `buildCompositePrompt`. Composite mode sends 3 images: composite (position) + tattoo design (detail) + body photo (skin/lighting). `buildBodyAreaBlock(targetBodyArea)` injects an optional design-time body-part directive + strict "no anatomy in the output" constraint so the model doesn't draw the limb after being told the placement.
 - `src/lib/kei-api.ts` — pure KEI HTTP client: `createKeiTask(prompt, urls, {model})` (model `gpt-image-2-image-to-image` default, or `nano-banana-pro`), `waitForKeiTask`, `pollKeiTask`, `KeiTaskFailedError`, `KeiCreditsError` (thrown on exhausted credits — non-retryable). Re-exports `buildTattooPrompt` from prompts.ts.
 - `src/lib/storage.ts` — `uploadBase64`, `uploadFromUrl` to Supabase Storage bucket `session-assets`
 - `src/lib/tattoo-colors.ts` — curated ink palette, `getColorsByHex`
-- `src/lib/tattoo-pdf.ts` — **print/stencil engine**: `computeStencilLayout`, `defaultStencilCenter`, `loadTrimmedStencilImage` (auto-crops the design's empty frame to the actual ink), `downloadTattooStencilPdf` (tiles one tattoo across N A4 sheets → multi-page PDF, one sheet per page, with mirror + rotation). Grid: 1→1×1, 2→1×2, 4→2×2, 8→2×4.
-- `src/store/app-store.ts` — Zustand store: `designerId`, session lifecycle, design state, `persistDesigns`, `finalizeSession`, `hydrateFromSession`, `replaceReferenceImage`
+- `src/lib/tattoo-pdf.ts` — **print/stencil engine**: `computeStencilLayout`, `defaultStencilCenter`, `loadTrimmedStencilImage` (auto-crops the design's empty frame to the actual ink), `downloadTattooStencilPdf` (tiles one tattoo across N A4 sheets → multi-page PDF, one sheet per page, with mirror + rotation, plus a `STENCIL_MARGIN_MM` 2mm light-grey safe-area guide drawn as one continuous outer rectangle around the assembled grid). Grid: 1→1×1, 2→1×2, 4→2×2, 8→2×4.
+- `src/store/app-store.ts` — Zustand store: `designerId`, session lifecycle, design state (incl. `targetBodyArea` body-part hint), `persistDesigns` (syncs style/description/target_body_area to `sessions`), `finalizeSession`, `hydrateFromSession`, `replaceReferenceImage`
 
 ### Components
 - `src/components/session/SessionOverview.tsx` — **shared read-only session detail view** used by admin and designer. Shows: session card, customer request, reference images, approved design, placement. Header **Download** button opens the Print Studio. Takes `sessionId`, `backUrl`, `backLabel` props.

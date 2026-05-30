@@ -1,6 +1,6 @@
 # Cleopatra Ink Studio — Progress Tracker
 
-_Last updated: 2026-05-27_
+_Last updated: 2026-05-30_
 
 ---
 
@@ -163,6 +163,37 @@ Full staff login system, role-based access, customer management, session overvie
 
 ### Session TTL Extended
 - [x] Cron cleanup TTL raised from 3hr → 24hr so in-progress sessions aren't wiped mid-use
+
+### Designer Soft Delete
+- [x] `staff.deleted_at timestamptz` column added. Hard delete was off the table — `sessions.designer_id` is `ON DELETE SET NULL`, so removing a staff row would wipe every "designed by X" attribution
+- [x] `DELETE /api/studio/designers` — sets `deleted_at = now()` + `is_active = false`; refuses self / admin targets
+- [x] `GET /api/studio/designers` filters out rows where `deleted_at is not null`
+- [x] Login (`/studio/login`), middleware, and `getStaffSession()` all reject `deleted_at != null` so removed designers cannot sign in even if reactivated via direct DB edit
+- [x] Admin dashboard — trash-icon button next to each Active toggle; `window.confirm` warning; row removed from local state on success; stats updated client-side. Designer detail page intentionally left accessible so admins can still review a removed designer's historical work
+- [x] All session-history displays (admin recent sessions, customer page, `SessionOverview`, designer detail) keep showing the deleted designer's name because the staff row is preserved
+
+### Designer Password Reset
+- [x] `PUT /api/studio/designers` — admin-only; updates Supabase Auth password via `service.auth.admin.updateUserById`; **never stored in our DB**; min 6 chars; refuses self / admin / soft-deleted targets
+- [x] Designer detail page — "Reset Password" button under the Total Sessions stat; on click reveals an inline card (form is hidden by default)
+- [x] Inline form: new-password input with eye-toggle visibility, `Generate` button (12-char crypto-random alphabet avoiding 0/O/1/l/I), Cancel, Set Password
+- [x] After success: gold-highlighted panel shows the new password once with a Copy button (1.5s "Copied" confirmation); warning that it disappears on navigate; only held in component state — never persisted
+
+### PDF Stencil Safe-Area Margin
+- [x] Client diagnosis: most printers can't print within ~1-2mm of the paper edge, so a full-bleed PDF was silently being cropped along the seams when sheets were tiled
+- [x] `STENCIL_MARGIN_MM = 2` constant in `src/lib/tattoo-pdf.ts`. Per-sheet logic draws only exterior-edge segments (no margin lines on interior sheet seams), so taped sheets form one continuous light-grey rectangle around the whole assembled tattoo. Drawn with `doc.line()` as vectors (0.2mm hairline, `#b4b4b4`) — crisp at any zoom
+- [x] Matching live-preview overlay in `TattooPrintStudio.tsx` — single absolutely-positioned div with `1px solid #b4b4b4` inset by `STENCIL_MARGIN_MM × scale`
+- [x] Guide only — the tattoo is not clipped to the margin; users still see if their composition is going to be cropped by the printer
+- [x] Footer caption updated: "Grey border = 2mm printer safe-area"
+
+### Design-Time Body Area Hint
+- [x] Client insight: when the AI didn't know the target body part, it tended to produce square compositions that didn't fit narrow placements (forearm, calf) well, then the placement step had to shrink the design to fit
+- [x] `sessions.target_body_area text` column added; threaded through store (`targetBodyArea` state, setter, persist, hydrate, Supabase sync in `persistDesigns`)
+- [x] `buildBodyAreaBlock()` in `prompts.ts` — when set, injects a `TARGET BODY AREA:` directive (proportions, flow, detail density for the area) AND an aggressive output constraint that explicitly forbids drawing any anatomy in the output (image models tend to draw the limb once you mention it). When unset, falls back to the existing "No body parts" line
+- [x] `buildInitialDesignPrompt`, `buildRefinementPrompt`, `buildTattooPrompt` all take optional `targetBodyArea` arg; `/api/generate` accepts it from the payload
+- [x] `BodyAreaPicker` UI on the design page between Style and Description: 11 preset chips (Forearm, Upper Arm, Shoulder, Wrist, Chest, Back, Ribs, Thigh, Calf, Ankle, Neck) + a `Custom…` chip that toggles a free-text input. Optional — empty value = no hint, no regression. Threaded into both initial generate and refine payloads (so retries via `lastPayload` carry it too)
+
+### Credits-Exhausted Message Clarity
+- [x] Replaced the deliberately-vague "AI image generation is temporarily unavailable. Please notify studio staff to restore the service." with the explicit "AI generation credits are exhausted. Please contact the admin to top up the credits and restore the service." on both the design and placement pages — staff immediately know the fix is topping up credits, not debugging
 
 ### Dead Code Removed
 - [x] `/new/page.tsx` — orphaned customer intake page (designer dashboard has same logic inline)
