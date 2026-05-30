@@ -46,14 +46,37 @@ ${lines}
 
 // ── 1. TATTOO DESIGN — Initial Generation ───────────────────
 
+// Body-area guidance. Mentioning the body part helps the model pick an
+// aspect-ratio/flow/detail-density that fits — BUT image models love to
+// over-interpret and draw the limb itself. The block below mentions the
+// target once, then strictly re-enforces "tattoo only, no anatomy" so the
+// output stays a flat design on paper.
+function buildBodyAreaBlock(targetBodyArea: string): { directive: string; constraint: string } {
+  const trimmed = targetBodyArea.trim();
+  if (!trimmed) return { directive: "", constraint: "- No body parts, skin, hands, limbs, or tattoo machines" };
+
+  return {
+    directive: `
+TARGET BODY AREA: This tattoo will be placed on the ${trimmed}. Design it with that area in mind:
+- Choose proportions, flow direction, and silhouette that suit the ${trimmed}
+- Adjust detail density so the design reads well at the typical size for the ${trimmed}
+- Compose so the design feels at home on that body part
+`.trim(),
+    constraint: `- ABSOLUTELY NO body parts in the image. Despite the target area being the ${trimmed}, the output MUST be the tattoo DESIGN ONLY — drawn flat on pure white background, exactly as it would appear on stencil paper before being applied to skin.
+- Do NOT draw the ${trimmed}, any skin, any anatomy, any limb, any silhouette of a body. Only the standalone artwork.`,
+  };
+}
+
 export function buildInitialDesignPrompt(
   description: string,
   style: string,
   hasReferenceImages: boolean,
-  colorHexes: string[] = []
+  colorHexes: string[] = [],
+  targetBodyArea: string = ""
 ): string {
   const styleLabel = style || "fine-line black-and-grey";
   const palette = buildPaletteBlock(colorHexes);
+  const bodyArea = buildBodyAreaBlock(targetBodyArea);
   const hasColors = colorHexes.length > 0;
 
   const referenceDirective = hasReferenceImages
@@ -71,6 +94,8 @@ DESCRIPTION: ${description.trim()}
 
 ${referenceDirective}
 
+${bodyArea.directive}
+
 ${palette.directive}
 
 STYLE:
@@ -83,7 +108,7 @@ ${shadingLine}
 OUTPUT:
 - Pure white background
 ${palette.constraint}
-- No body parts, skin, hands, or tattoo machines
+${bodyArea.constraint}
 - No typography, watermarks, or borders
 - Single design, square (1:1) aspect ratio
 - Professional tattoo studio quality
@@ -96,10 +121,12 @@ export function buildRefinementPrompt(
   description: string,
   style: string,
   refinement: RefinementInfo,
-  colorHexes: string[] = []
+  colorHexes: string[] = [],
+  targetBodyArea: string = ""
 ): string {
   const styleLabel = style || "fine-line black-and-grey";
   const palette = buildPaletteBlock(colorHexes);
+  const bodyArea = buildBodyAreaBlock(targetBodyArea);
 
   const imageLabels = refinement.selectedImages
     .map((img) => `  - Image ${img.index}: "${img.name}"`)
@@ -116,6 +143,8 @@ ${imageLabels}
 CUSTOMER FEEDBACK:
 "${refinement.text.trim()}"
 
+${bodyArea.directive}
+
 ${palette.directive}
 
 INSTRUCTIONS:
@@ -127,7 +156,8 @@ STYLE: ${styleLabel} tattoo, professional quality.
 
 OUTPUT:
 - Pure white background
-- No body parts, skin, text, or watermarks
+${bodyArea.constraint}
+- No typography, watermarks, or borders
 - Single centred design, square (1:1) aspect ratio
 - Crisp, sharp linework
 ${palette.constraint}
@@ -141,12 +171,13 @@ export function buildTattooPrompt(
   style: string,
   hasReferenceImages: boolean,
   refinement?: RefinementInfo,
-  colorHexes: string[] = []
+  colorHexes: string[] = [],
+  targetBodyArea: string = ""
 ): string {
   if (refinement && refinement.selectedImages.length > 0) {
-    return buildRefinementPrompt(description, style, refinement, colorHexes);
+    return buildRefinementPrompt(description, style, refinement, colorHexes, targetBodyArea);
   }
-  return buildInitialDesignPrompt(description, style, hasReferenceImages, colorHexes);
+  return buildInitialDesignPrompt(description, style, hasReferenceImages, colorHexes, targetBodyArea);
 }
 
 // ── 4. PLACEMENT — Standard mode ────────────────────────────

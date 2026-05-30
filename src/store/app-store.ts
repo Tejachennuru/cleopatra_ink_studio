@@ -27,6 +27,7 @@ interface AppState {
   // Design step
   tattooStyle: string;
   tattooDescription: string;
+  targetBodyArea: string;             // optional body-part hint for design generation
   referenceImages: string[];
   selectedColors: string[];           // hex codes from TATTOO_COLORS — empty = black & grey
   generatedDesigns: DesignVariant[];
@@ -52,6 +53,7 @@ interface AppState {
   startSessionForUser: (userId: string, name: string, phone: string) => Promise<string>;
   setTattooStyle: (style: string) => void;
   setTattooDescription: (text: string) => void;
+  setTargetBodyArea: (text: string) => void;
   addReferenceImage: (url: string) => void;
   removeReferenceImage: (index: number) => void;
   replaceReferenceImage: (oldUrl: string, newUrl: string) => void;
@@ -90,6 +92,7 @@ const defaultState = {
   customerPhone: "",
   tattooStyle: "",
   tattooDescription: "",
+  targetBodyArea: "",
   referenceImages: [],
   selectedColors: [] as string[],
   generatedDesigns: [],
@@ -112,6 +115,7 @@ const defaultState = {
 const freshSessionDesignState = {
   tattooStyle: "",
   tattooDescription: "",
+  targetBodyArea: "",
   referenceImages: [] as string[],
   selectedColors: [] as string[],
   generatedDesigns: [],
@@ -179,6 +183,8 @@ export const useAppStore = create<AppState>()(
   },
 
   setTattooDescription: (text) => set({ tattooDescription: text }),
+
+  setTargetBodyArea: (text) => set({ targetBodyArea: text }),
 
   addReferenceImage: (url) =>
     set((s) => ({
@@ -251,13 +257,17 @@ export const useAppStore = create<AppState>()(
   setPlacementDbId: (id) => set({ placementDbId: id }),
 
   persistDesigns: async (designs) => {
-    const { sessionId, tattooStyle, tattooDescription, iterationCount } = get();
+    const { sessionId, tattooStyle, tattooDescription, targetBodyArea, iterationCount } = get();
     if (!sessionId) return designs;
 
-    // Keep session row in sync with latest style/description
+    // Keep session row in sync with latest style/description/body-area hint
     await supabase
       .from("sessions")
-      .update({ tattoo_style: tattooStyle, tattoo_description: tattooDescription })
+      .update({
+        tattoo_style: tattooStyle,
+        tattoo_description: tattooDescription,
+        target_body_area: targetBodyArea || null,
+      })
       .eq("id", sessionId);
 
     const persistable = designs.filter((d) => d.imageUrl);
@@ -361,6 +371,7 @@ export const useAppStore = create<AppState>()(
         user_id,
         tattoo_style,
         tattoo_description,
+        target_body_area,
         status,
         users ( first_name, phone ),
         tattoo_designs ( id, image_url, style_name, pattern_type, iteration, is_finalized ),
@@ -427,6 +438,7 @@ export const useAppStore = create<AppState>()(
       customerPhone: user?.phone ?? get().customerPhone,
       tattooStyle: session.tattoo_style ?? "",
       tattooDescription: session.tattoo_description ?? "",
+      targetBodyArea: session.target_body_area ?? "",
       generatedDesigns: latestDesigns,
       selectedDesign: finalizedDesign ?? get().selectedDesign ?? latestDesigns[0] ?? null,
       iterationCount: latestIteration || 0,
@@ -452,6 +464,7 @@ export const useAppStore = create<AppState>()(
         customerPhone: state.customerPhone,
         tattooStyle: state.tattooStyle,
         tattooDescription: state.tattooDescription,
+        targetBodyArea: state.targetBodyArea,
         selectedColors: state.selectedColors,
         generatedDesigns: state.generatedDesigns,
         selectedDesigns: state.selectedDesigns,

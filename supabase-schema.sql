@@ -33,10 +33,11 @@ create table staff (
                 check (role in ('admin', 'designer')),
   is_active   boolean     not null default true,
   last_login  timestamptz,
+  deleted_at  timestamptz,
   created_at  timestamptz not null default now()
 );
 
-comment on table staff is 'Studio staff (designers + admin). Auth via Supabase Auth email+password. last_login enforces 24hr session timeout in middleware.';
+comment on table staff is 'Studio staff (designers + admin). Auth via Supabase Auth email+password. last_login enforces 24hr session timeout in middleware. deleted_at is a soft-delete marker — non-null means hidden from admin list and blocked from logging in; the row is kept so historical sessions still resolve "designed by X".';
 
 -- ── 2. USERS (customers) ────────────────────────────────────
 -- Phone-based identification only. No login for customers.
@@ -59,6 +60,7 @@ create table sessions (
   designer_id         uuid        references staff(id) on delete set null,
   tattoo_style        text,
   tattoo_description  text,
+  target_body_area    text,
   status              text        not null default 'active'
                         check (status in ('active', 'completed', 'abandoned')),
   created_at          timestamptz not null default now(),

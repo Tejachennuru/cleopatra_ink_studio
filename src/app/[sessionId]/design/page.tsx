@@ -13,11 +13,11 @@ import PinterestSearch from "@/components/pinterest/PinterestSearch";
 import { blobUrlToBase64 } from "@/lib/image-utils";
 import { TATTOO_COLORS } from "@/lib/tattoo-colors";
 
-// Customer-facing message when the AI image service is out of credits. Kept
-// deliberately vague (no "out of credits") — it points staff to the real fix
-// without exposing billing state to the customer.
+// Shown when the AI image service rejects the request for exhausted credits.
+// Direct copy so studio staff immediately know the fix is to top up the AI
+// credits, not to debug something else.
 const SERVICE_UNAVAILABLE_MSG =
-  "AI image generation is temporarily unavailable. Please notify studio staff to restore the service.";
+  "AI generation credits are exhausted. Please contact the admin to top up the credits and restore the service.";
 
 export default function DesignPage({ params }: { params: Promise<{ sessionId: string }> }) {
   const { sessionId } = use(params);
@@ -26,6 +26,7 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
   const {
     tattooStyle, setTattooStyle,
     tattooDescription, setTattooDescription,
+    targetBodyArea, setTargetBodyArea,
     referenceImages, addReferenceImage, removeReferenceImage, replaceReferenceImage,
     selectedColors, toggleColor, clearColors,
     generatedDesigns, generateDesigns, addGeneratedDesign, finishGenerating,
@@ -449,6 +450,7 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
       images,
       referenceImageUrls: urls,
       colors: selectedColors,
+      targetBodyArea,
       count: 5,
     });
   }
@@ -473,6 +475,7 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
       refinementText,
       selectedDesignNames,
       colors: selectedColors,
+      targetBodyArea,
       count: 5,
     });
   }
@@ -791,6 +794,9 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
             </label>
             <StyleSelect value={tattooStyle} onChange={setTattooStyle} />
           </div>
+
+          {/* Body placement hint */}
+          <BodyAreaPicker value={targetBodyArea} onChange={setTargetBodyArea} />
 
           {/* Description */}
           <div className="flex flex-col gap-2">
@@ -1468,5 +1474,113 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
       </div>
       </>} {/* end designMode === "ai" sticky CTA */}
     </>
+  );
+}
+
+// ── Body-area picker ──────────────────────────────────────────────
+// Optional design-time hint for the AI: lets the customer say where on the
+// body the tattoo will live so the model picks an appropriate aspect/flow.
+// Empty value = no hint, AI generates as before.
+
+const BODY_AREA_CHIPS = [
+  "Forearm",
+  "Upper Arm",
+  "Shoulder",
+  "Wrist",
+  "Chest",
+  "Back",
+  "Ribs",
+  "Thigh",
+  "Calf",
+  "Ankle",
+  "Neck",
+] as const;
+
+function BodyAreaPicker({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const isPreset = (BODY_AREA_CHIPS as readonly string[]).includes(value);
+  const [customOpen, setCustomOpen] = useState(value !== "" && !isPreset);
+
+  function pickPreset(label: string) {
+    if (value === label) {
+      onChange("");
+    } else {
+      onChange(label);
+      setCustomOpen(false);
+    }
+  }
+
+  function toggleCustom() {
+    if (customOpen) {
+      // Closing — wipe whatever was typed so the AI doesn't pick up a stale hint.
+      if (!isPreset) onChange("");
+      setCustomOpen(false);
+    } else {
+      // Opening — clear any preset selection so the input owns the value.
+      if (isPreset) onChange("");
+      setCustomOpen(true);
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex items-baseline justify-between gap-3">
+        <label className="text-xs font-mono tracking-[0.15em] uppercase text-muted">
+          Body placement <span className="text-muted/50 normal-case">(optional — helps the AI compose better)</span>
+        </label>
+        {value && (
+          <button
+            type="button"
+            onClick={() => { onChange(""); setCustomOpen(false); }}
+            className="text-[10px] font-mono text-muted hover:text-gold uppercase tracking-wider cursor-pointer"
+          >
+            Clear
+          </button>
+        )}
+      </div>
+
+      <div className="flex flex-wrap gap-1.5">
+        {BODY_AREA_CHIPS.map((label) => {
+          const selected = value === label;
+          return (
+            <button
+              key={label}
+              type="button"
+              onClick={() => pickPreset(label)}
+              aria-pressed={selected}
+              className={`px-3 py-1.5 rounded-full text-xs font-mono border transition-colors cursor-pointer ${
+                selected
+                  ? "bg-gold text-bg border-gold"
+                  : "bg-bg text-muted border-cleo-border hover:border-gold/40 hover:text-ink"
+              }`}
+            >
+              {label}
+            </button>
+          );
+        })}
+        <button
+          type="button"
+          onClick={toggleCustom}
+          aria-pressed={customOpen}
+          className={`px-3 py-1.5 rounded-full text-xs font-mono border transition-colors cursor-pointer ${
+            customOpen || (!isPreset && value !== "")
+              ? "bg-gold text-bg border-gold"
+              : "bg-bg text-muted border-cleo-border hover:border-gold/40 hover:text-ink"
+          }`}
+        >
+          Custom…
+        </button>
+      </div>
+
+      {customOpen && (
+        <input
+          type="text"
+          autoFocus
+          value={isPreset ? "" : value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder="e.g. inner bicep, between shoulder blades, top of foot…"
+          className="bg-bg border border-cleo-border rounded-xl px-4 py-2.5 text-ink text-sm placeholder:text-muted/50 focus:border-gold focus:outline-none transition-colors"
+        />
+      )}
+    </div>
   );
 }

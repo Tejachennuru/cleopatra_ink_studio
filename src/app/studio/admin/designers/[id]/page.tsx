@@ -41,6 +41,63 @@ export default function DesignerDetailPage({ params }: { params: Promise<{ id: s
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
 
+  // Password reset
+  const [resetOpen, setResetOpen] = useState(false);
+  const [newPassword, setNewPassword] = useState("");
+  const [showNewPassword, setShowNewPassword] = useState(false);
+  const [resetLoading, setResetLoading] = useState(false);
+  const [resetError, setResetError] = useState<string | null>(null);
+  const [lastSetPassword, setLastSetPassword] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  function generatePassword() {
+    const charset = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789";
+    let pwd = "";
+    const bytes = new Uint32Array(12);
+    crypto.getRandomValues(bytes);
+    for (let i = 0; i < 12; i++) pwd += charset[bytes[i] % charset.length];
+    setNewPassword(pwd);
+    setShowNewPassword(true);
+    setResetError(null);
+  }
+
+  async function handleReset(e: React.FormEvent) {
+    e.preventDefault();
+    if (newPassword.length < 6) {
+      setResetError("Password must be at least 6 characters.");
+      return;
+    }
+    setResetLoading(true);
+    setResetError(null);
+    const res = await fetch("/api/studio/designers", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, password: newPassword }),
+    });
+    if (!res.ok) {
+      const { error } = await res.json().catch(() => ({ error: "Failed to reset password" }));
+      setResetError(error ?? "Failed to reset password");
+      setResetLoading(false);
+      return;
+    }
+    setLastSetPassword(newPassword);
+    setNewPassword("");
+    setShowNewPassword(false);
+    setResetOpen(false);
+    setResetLoading(false);
+  }
+
+  async function copyPassword() {
+    if (!lastSetPassword) return;
+    try {
+      await navigator.clipboard.writeText(lastSetPassword);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // ignore — clipboard might be blocked
+    }
+  }
+
   useEffect(() => {
     async function load() {
       const { data: { user } } = await supabase.auth.getUser();
@@ -129,11 +186,140 @@ export default function DesignerDetailPage({ params }: { params: Promise<{ id: s
               Designer · Joined {new Date(designer!.created_at).toLocaleDateString("en-US", { year: "numeric", month: "long" })}
             </p>
           </div>
-          <div className="text-right flex-shrink-0">
-            <p className="font-cinzel text-3xl font-black text-gold leading-none">{sessions.length}</p>
-            <p className="text-muted text-[10px] font-mono uppercase tracking-widest mt-1">Total Sessions</p>
+          <div className="text-right flex-shrink-0 flex flex-col items-end gap-2">
+            <div>
+              <p className="font-cinzel text-3xl font-black text-gold leading-none">{sessions.length}</p>
+              <p className="text-muted text-[10px] font-mono uppercase tracking-widest mt-1">Total Sessions</p>
+            </div>
+            <button
+              onClick={() => { setResetOpen(true); setResetError(null); setLastSetPassword(null); }}
+              className="px-3 py-1.5 text-[10px] font-cinzel font-bold tracking-[0.15em] uppercase rounded-lg border border-gold/40 text-gold hover:bg-gold/10 transition-colors cursor-pointer"
+            >
+              Reset Password
+            </button>
           </div>
         </motion.div>
+
+        {/* Password reset — only shown when triggered */}
+        {(resetOpen || lastSetPassword) && (
+        <motion.div
+          initial={{ opacity: 0, y: -8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.25 }}
+          className="bg-surface border border-cleo-border rounded-2xl p-5 flex flex-col gap-3"
+        >
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <p className="font-cinzel text-xs font-bold tracking-[0.18em] text-muted uppercase">Reset Password</p>
+              <p className="text-muted/70 text-xs font-mono mt-1">
+                Set a new password. We don&apos;t store it — write it down now.
+              </p>
+            </div>
+            <button
+              onClick={() => { setResetOpen(false); setLastSetPassword(null); setNewPassword(""); setResetError(null); setShowNewPassword(false); }}
+              aria-label="Close"
+              className="flex-shrink-0 w-7 h-7 rounded-lg border border-cleo-border text-muted hover:text-ink hover:border-ink/40 transition-colors flex items-center justify-center cursor-pointer"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+
+          {lastSetPassword && (
+            <div className="bg-gold/5 border border-gold/30 rounded-xl p-4 flex flex-col gap-2">
+              <p className="text-[10px] font-mono tracking-widest uppercase text-gold">New password — copy it now</p>
+              <div className="flex items-center gap-2">
+                <code className="flex-1 bg-bg border border-cleo-border rounded-lg px-3 py-2 text-ink font-mono text-sm break-all select-all">
+                  {lastSetPassword}
+                </code>
+                <button
+                  onClick={copyPassword}
+                  className="flex-shrink-0 px-3 py-2 text-xs font-mono uppercase tracking-wider rounded-lg border border-gold/40 text-gold hover:bg-gold/10 transition-colors cursor-pointer"
+                >
+                  {copied ? "Copied" : "Copy"}
+                </button>
+              </div>
+              <div className="flex items-center justify-between gap-2 mt-1">
+                <p className="text-muted/70 text-[10px] font-mono">
+                  This will disappear when you leave the page.
+                </p>
+                <button
+                  onClick={() => setLastSetPassword(null)}
+                  className="text-muted hover:text-ink text-xs font-mono underline cursor-pointer"
+                >
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          )}
+
+          {resetOpen && (
+            <form onSubmit={handleReset} className="flex flex-col gap-3">
+              <div className="flex flex-col gap-1.5">
+                <label className="text-[10px] font-mono tracking-[0.15em] uppercase text-muted">New password</label>
+                <div className="relative">
+                  <input
+                    type={showNewPassword ? "text" : "password"}
+                    autoComplete="new-password"
+                    value={newPassword}
+                    onChange={(e) => { setNewPassword(e.target.value); setResetError(null); }}
+                    placeholder="At least 6 characters"
+                    className="w-full bg-bg border border-cleo-border rounded-xl px-4 py-3 pr-11 text-ink text-base placeholder:text-muted/50 focus:outline-none focus:border-gold transition-colors font-mono"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowNewPassword((v) => !v)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-muted hover:text-gold transition-colors"
+                    aria-label={showNewPassword ? "Hide password" : "Show password"}
+                  >
+                    {showNewPassword ? (
+                      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
+                      </svg>
+                    ) : (
+                      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                      </svg>
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              {resetError && (
+                <p className="text-error text-xs font-mono">{resetError}</p>
+              )}
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={generatePassword}
+                  className="px-3 py-2 text-xs font-mono uppercase tracking-wider rounded-lg border border-cleo-border text-muted hover:text-gold hover:border-gold/40 transition-colors cursor-pointer"
+                >
+                  Generate
+                </button>
+                <div className="flex-1" />
+                <button
+                  type="button"
+                  onClick={() => { setResetOpen(false); setNewPassword(""); setResetError(null); setShowNewPassword(false); }}
+                  disabled={resetLoading}
+                  className="px-3 py-2 text-xs font-mono uppercase tracking-wider rounded-lg text-muted hover:text-ink transition-colors cursor-pointer disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={resetLoading || newPassword.length < 6}
+                  className="px-4 py-2 text-xs font-cinzel font-bold uppercase tracking-widest rounded-lg bg-gold text-bg border border-gold hover:bg-gold-light transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                >
+                  {resetLoading ? "Saving…" : "Set Password"}
+                </button>
+              </div>
+            </form>
+          )}
+        </motion.div>
+        )}
 
         {/* Stats row */}
         <div className="grid grid-cols-3 gap-3">

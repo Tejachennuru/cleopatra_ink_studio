@@ -40,11 +40,11 @@ function LoginForm() {
     const { data: { user } } = await supabase.auth.getUser();
     const { data: staff } = await supabase
       .from("staff")
-      .select("role, is_active")
+      .select("role, is_active, deleted_at")
       .eq("id", user!.id)
       .maybeSingle();
 
-    if (!staff || !staff.is_active) {
+    if (!staff || !staff.is_active || staff.deleted_at) {
       await supabase.auth.signOut();
       setError("Your account has been deactivated. Contact the admin.");
       setLoading(false);

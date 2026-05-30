@@ -4,6 +4,7 @@ import { useRef, useState, useEffect, useCallback, useLayoutEffect } from "react
 import { motion } from "framer-motion";
 import {
   SHEET_COUNTS,
+  STENCIL_MARGIN_MM,
   computeStencilLayout,
   defaultStencilCenter,
   loadTrimmedStencilImage,
@@ -186,6 +187,22 @@ export default function TattooPrintStudio({ imageUrl, subtitle, filenameBase = "
                 ))}
               </div>
 
+              {/* Safe-area guide — matches the thin grey line in the PDF.
+                  Single rectangle around the assembled grid (not per sheet),
+                  inset by the printer-safe margin. Visual only — the tattoo
+                  is not clipped to it. */}
+              <div
+                aria-hidden
+                className="absolute pointer-events-none z-30"
+                style={{
+                  left: STENCIL_MARGIN_MM * scale,
+                  top: STENCIL_MARGIN_MM * scale,
+                  right: STENCIL_MARGIN_MM * scale,
+                  bottom: STENCIL_MARGIN_MM * scale,
+                  border: "1px solid #b4b4b4",
+                }}
+              />
+
               {/* Tattoo — draggable, mirrored in place when toggled */}
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
@@ -216,7 +233,7 @@ export default function TattooPrintStudio({ imageUrl, subtitle, filenameBase = "
 
         <div className="px-4 sm:px-6 py-2 border-t border-white/10">
           <p className="text-white/40 text-[10px] font-mono text-center">
-            Drag the design to reposition · Print all pages at 100% scale and tape sheets together
+            Drag the design to reposition · Print at 100% · Grey border = {STENCIL_MARGIN_MM}mm printer safe-area
           </p>
         </div>
       </div>

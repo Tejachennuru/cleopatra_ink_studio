@@ -63,12 +63,12 @@ export async function middleware(request: NextRequest) {
     if (user) {
       const { data: staff } = await supabase
         .from("staff")
-        .select("role, is_active, last_login")
+        .select("role, is_active, last_login, deleted_at")
         .eq("id", user.id)
         .maybeSingle();
 
       // Only skip login if session is still within 24hr window
-      if (staff && staff.is_active && !isSessionExpired(staff.last_login)) {
+      if (staff && staff.is_active && !staff.deleted_at && !isSessionExpired(staff.last_login)) {
         const dest = staff.role === "admin" ? "/studio/admin" : "/studio/designer";
         return NextResponse.redirect(new URL(dest, request.url));
       }
@@ -88,12 +88,12 @@ export async function middleware(request: NextRequest) {
 
   const { data: staff } = await supabase
     .from("staff")
-    .select("role, is_active, last_login")
+    .select("role, is_active, last_login, deleted_at")
     .eq("id", user.id)
     .maybeSingle();
 
-  // Not a staff member or deactivated
-  if (!staff || !staff.is_active) {
+  // Not a staff member, deactivated, or soft-deleted
+  if (!staff || !staff.is_active || staff.deleted_at) {
     await supabase.auth.signOut();
     return NextResponse.redirect(new URL("/studio/login?error=access_denied", request.url));
   }

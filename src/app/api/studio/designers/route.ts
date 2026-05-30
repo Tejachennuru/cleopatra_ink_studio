@@ -14,6 +14,7 @@ export async function GET() {
   const { data, error } = await service
     .from("staff")
     .select("id, email, name, role, is_active, created_at")
+    .is("deleted_at", null)
     .order("created_at", { ascending: false });
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
@@ -81,6 +82,79 @@ export async function PATCH(req: NextRequest) {
   }
 
   const { error } = await service.from("staff").update({ is_active }).eq("id", id);
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  return NextResponse.json({ ok: true });
+}
+
+// PUT /api/studio/designers — reset a designer's password (admin only).
+// The new password is applied to Supabase Auth only — never stored in our DB.
+export async function PUT(req: NextRequest) {
+  const supabase = await createSupabaseServerClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  const service = createServiceClient();
+  const { data: requester } = await service.from("staff").select("role").eq("id", user.id).maybeSingle();
+  if (requester?.role !== "admin") return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+
+  const { id, password } = await req.json();
+  if (!id) return NextResponse.json({ error: "id is required" }, { status: 400 });
+  if (typeof password !== "string" || password.length < 6) {
+    return NextResponse.json({ error: "Password must be at least 6 characters" }, { status: 400 });
+  }
+
+  if (id === user.id) {
+    return NextResponse.json({ error: "Use admin settings to change your own password" }, { status: 400 });
+  }
+
+  const { data: target } = await service
+    .from("staff")
+    .select("role, deleted_at")
+    .eq("id", id)
+    .maybeSingle();
+  if (!target) return NextResponse.json({ error: "Designer not found" }, { status: 404 });
+  if (target.role === "admin") {
+    return NextResponse.json({ error: "Cannot reset an admin password from here" }, { status: 400 });
+  }
+  if (target.deleted_at) {
+    return NextResponse.json({ error: "Cannot reset password for a removed designer" }, { status: 400 });
+  }
+
+  const { error } = await service.auth.admin.updateUserById(id, { password });
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+  return NextResponse.json({ ok: true });
+}
+
+// DELETE /api/studio/designers — soft-delete a designer (admin only).
+// Keeps the staff row so historical sessions still resolve "designed by X",
+// but hides the designer from the admin list and blocks them from logging in.
+export async function DELETE(req: NextRequest) {
+  const supabase = await createSupabaseServerClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  const service = createServiceClient();
+  const { data: requester } = await service.from("staff").select("role").eq("id", user.id).maybeSingle();
+  if (requester?.role !== "admin") return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+
+  const { id } = await req.json();
+  if (!id) return NextResponse.json({ error: "id is required" }, { status: 400 });
+
+  if (id === user.id) {
+    return NextResponse.json({ error: "Cannot delete your own account" }, { status: 400 });
+  }
+
+  const { data: target } = await service.from("staff").select("role").eq("id", id).maybeSingle();
+  if (!target) return NextResponse.json({ error: "Designer not found" }, { status: 404 });
+  if (target.role === "admin") {
+    return NextResponse.json({ error: "Cannot delete an admin account" }, { status: 400 });
+  }
+
+  const { error } = await service
+    .from("staff")
+    .update({ deleted_at: new Date().toISOString(), is_active: false })
+    .eq("id", id);
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json({ ok: true });
 }

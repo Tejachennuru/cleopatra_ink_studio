@@ -37,6 +37,7 @@ export async function POST(req: NextRequest) {
     refinementText = "",
     selectedDesignNames = [] as string[],
     colors = [] as string[],
+    targetBodyArea = "",
     count = 5,
   } = await req.json();
 
@@ -92,7 +93,8 @@ export async function POST(req: NextRequest) {
     style ?? "",
     hasUserRefs,
     refinementInfo,
-    Array.isArray(colors) ? (colors as string[]) : []
+    Array.isArray(colors) ? (colors as string[]) : [],
+    typeof targetBodyArea === "string" ? targetBodyArea : ""
   );
 
   // ── Stream results as each task completes ────────────────────────────

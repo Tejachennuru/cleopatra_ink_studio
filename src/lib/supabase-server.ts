@@ -38,10 +38,10 @@ export async function getStaffSession(): Promise<StaffMember | null> {
 
   const { data: staff } = await supabase
     .from("staff")
-    .select("id, email, name, role, is_active, created_at")
+    .select("id, email, name, role, is_active, created_at, deleted_at")
     .eq("id", user.id)
     .maybeSingle();
 
-  if (!staff || !staff.is_active) return null;
+  if (!staff || !staff.is_active || staff.deleted_at) return null;
   return staff as StaffMember;
 }

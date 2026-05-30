@@ -4,6 +4,12 @@ import jsPDF from "jspdf";
 // A single A4 page in millimetres (portrait).
 export const A4_MM = { w: 210, h: 297 };
 
+// Safe-area inset drawn around the assembled tattoo. Office/consumer printers
+// typically refuse to print within 1–2mm of the paper edge, so a full-bleed
+// PDF gets silently cropped. The line is a guide only — the tattoo can still
+// overflow it; it just shows where the printer is likely to clip.
+export const STENCIL_MARGIN_MM = 2;
+
 // How N sheets are arranged into a grid (portrait-leaning per product spec).
 // The tattoo is tiled across the whole grid as ONE large image; each sheet
 // holds one piece, printed at 100% and taped together.
@@ -267,6 +273,40 @@ export async function downloadTattooStencilPdf({
       ctx.fillText(label, 4 * pxPerMm, 4 * pxPerMm);
 
       doc.addImage(canvas.toDataURL("image/png"), "PNG", 0, 0, A4_MM.w, A4_MM.h);
+
+      // Outer safe-area guide. Each sheet draws only the segments that sit on
+      // an exterior edge of the assembled grid; corners terminate at the
+      // perpendicular margin so taped sheets form one continuous rectangle.
+      const M = STENCIL_MARGIN_MM;
+      const exteriorLeft   = col === 0;
+      const exteriorRight  = col === cols - 1;
+      const exteriorTop    = row === 0;
+      const exteriorBottom = row === rows - 1;
+
+      doc.setDrawColor(180, 180, 180);
+      doc.setLineWidth(0.2);
+
+      if (exteriorTop) {
+        const x1 = exteriorLeft  ? M : 0;
+        const x2 = exteriorRight ? A4_MM.w - M : A4_MM.w;
+        doc.line(x1, M, x2, M);
+      }
+      if (exteriorBottom) {
+        const x1 = exteriorLeft  ? M : 0;
+        const x2 = exteriorRight ? A4_MM.w - M : A4_MM.w;
+        doc.line(x1, A4_MM.h - M, x2, A4_MM.h - M);
+      }
+      if (exteriorLeft) {
+        const y1 = exteriorTop    ? M : 0;
+        const y2 = exteriorBottom ? A4_MM.h - M : A4_MM.h;
+        doc.line(M, y1, M, y2);
+      }
+      if (exteriorRight) {
+        const y1 = exteriorTop    ? M : 0;
+        const y2 = exteriorBottom ? A4_MM.h - M : A4_MM.h;
+        doc.line(A4_MM.w - M, y1, A4_MM.w - M, y2);
+      }
+
       pageIndex++;
     }
   }

@@ -9,10 +9,11 @@ import CameraCapture from "@/components/camera/CameraCapture";
 import TattooPlacementEditor from "@/components/placement/TattooPlacementEditor";
 import { blobUrlToBase64 } from "@/lib/image-utils";
 
-// Customer-facing copy when the AI image service is out of credits — vague on
-// purpose (no billing details), points to the actual fix (staff).
+// Shown when the AI image service rejects the request for exhausted credits.
+// Direct copy so studio staff immediately know the fix is to top up the AI
+// credits, not to debug something else.
 const SERVICE_UNAVAILABLE_MSG =
-  "AI image generation is temporarily unavailable. Please notify studio staff to restore the service.";
+  "AI generation credits are exhausted. Please contact the admin to top up the credits and restore the service.";
 
 const QUICK_PLACEMENTS = [
   "Upper arm / bicep",
