@@ -220,15 +220,6 @@ const STYLE_PROMPT_DESCRIPTORS: Record<string, StyleDescriptor> = {
 
   // ── REALISM ───────────────────────────────────────────────
 
-  "Realistic": {
-    linework: "precise linework capturing accurate form and dimension",
-    shading: "photorealistic shading with smooth tonal transitions",
-    color: "black and grey or full color depending on subject — always photorealistic",
-    composition: "realistic, life-like composition — appears three-dimensional",
-    feel: "indistinguishable from a photograph at a glance — maximum realism",
-    subjects: "any subject rendered with photographic accuracy",
-  },
-
   "Hyper-realistic": {
     linework: "ultra-fine, precise linework exceeding photographic detail",
     shading: "advanced shading and texture work surpassing photographic appearance — extreme tonal precision",
