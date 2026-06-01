@@ -851,16 +851,24 @@ OUTPUT: Photorealistic tattoo portfolio quality — the kind of photo a professi
 export function buildCompositePrompt(): string {
   return `
 You have three reference images:
-1. The composite — shows the tattoo placed on the body at the exact chosen position, size, and angle
-2. The tattoo design — the clean, isolated design with full linework detail
-3. The body photo — the original skin with natural lighting and texture
+1. The composite — the customer's body photo with the tattoo already overlaid at the exact chosen position, size, and angle
+2. The tattoo design — the clean isolated artwork with full linework detail (use this for design accuracy only)
+3. The original body photo — clean skin with natural lighting and texture
 
-Render the tattoo as genuinely inked onto the skin:
-- Use image 1 for exact placement — keep the tattoo at precisely that position, size, and angle
-- Use image 2 for design accuracy — preserve every line and element of the tattoo faithfully
-- Use image 3 for skin realism — match the natural lighting, shadows, and skin texture
-- The tattoo ink sits absorbed into the skin — not floating, not pasted on
-- Tattoo edges fade seamlessly into surrounding skin, no harsh borders
-- Output is a natural photograph of a real tattoo — same framing and background as image 3
+Your task: make the tattoo in image 1 look genuinely inked onto the skin.
+
+CRITICAL — SIZE AND POSITION ARE LOCKED BY IMAGE 1:
+- The tattoo MUST remain at EXACTLY the same position, size, and angle as shown in image 1 — this is what the customer chose
+- Do NOT resize, reposition, rescale, or reinterpret the placement under any circumstances
+- If the tattoo appears small in image 1, render it small. If large, render it large. Match it exactly.
+- Use image 2 ONLY to recover fine linework detail that may be unclear at the composite's scale — never to resize or recompose
+
+REALISM PASS (apply to the tattoo at the locked position/size from image 1):
+- The tattoo ink sits absorbed into the skin surface — follows skin curves, contours, and muscle definition
+- Match the lighting direction, shadows, and skin tone from image 3
+- Tattoo edges fade seamlessly into surrounding skin — no sticker borders, no hard edges
+- Add subtle skin highlights and shadows over the tattoo ink for depth
+
+OUTPUT: Photorealistic tattoo portfolio photo — same framing and background as image 3, with the tattoo rendered as if professionally inked at the exact size and position shown in image 1.
 `.trim();
 }

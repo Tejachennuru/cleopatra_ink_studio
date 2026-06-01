@@ -488,9 +488,9 @@ export default function PlacementPage({ params }: { params: Promise<{ sessionId:
               {isPhotoMode && placementComposite && (
                 <motion.div key="composite-ready" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="flex flex-col gap-3">
                   <p className="text-muted text-xs font-mono uppercase tracking-widest">Placement Confirmed</p>
-                  <div className="rounded-xl overflow-hidden border border-gold/30 relative" style={{ aspectRatio: "4/3" }}>
+                  <div className="rounded-xl overflow-hidden border border-gold/30 relative">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={placementComposite} alt="Placement composite" className="w-full h-full object-cover" />
+                    <img src={placementComposite} alt="Placement composite" className="w-full h-auto object-contain" />
                     <div className="absolute top-2 right-2 bg-success/20 border border-success/40 text-success text-[10px] font-mono px-2 py-0.5 rounded-lg backdrop-blur-sm">
                       ✓ Placement set
                     </div>
