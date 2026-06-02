@@ -86,7 +86,7 @@ AI-powered tattoo design platform for **in-shop use by staff (designers + admin)
 ## Key Files
 
 ### Auth & Security
-- `middleware.ts` — runs on every request; blocks unauthenticated → `/studio/login`; blocks designers from `/studio/admin/*`; enforces 24hr session timeout via `last_login`; rejects soft-deleted designers (`deleted_at != null`)
+- `middleware.ts` — runs on every request; blocks unauthenticated → `/studio/login`; blocks designers from `/studio/admin/*`; enforces 24hr session timeout via `last_login`; rejects soft-deleted designers (`deleted_at != null`). Uses `getSession()` (cookie-local, no network) to extract user ID, then fires `getUser()` + staff DB query in `Promise.all()` — parallel, not sequential
 - `src/lib/supabase-server.ts` — server-only: `createSupabaseServerClient`, `createServiceClient`, `getStaffSession`
 - `src/lib/supabase-client.ts` — browser-only: `createSupabaseBrowserClient` (cookie-based, safe in `"use client"`)
 - `src/lib/staff-types.ts` — `StaffMember`, `StaffRole` types (safe to import anywhere)
@@ -98,7 +98,7 @@ AI-powered tattoo design platform for **in-shop use by staff (designers + admin)
 - `src/lib/storage.ts` — `uploadBase64`, `uploadFromUrl` to Supabase Storage bucket `session-assets`
 - `src/lib/tattoo-colors.ts` — curated ink palette, `getColorsByHex`
 - `src/lib/tattoo-pdf.ts` — **print/stencil engine**: `computeStencilLayout`, `defaultStencilCenter`, `loadTrimmedStencilImage` (auto-crops the design's empty frame to the actual ink), `downloadTattooStencilPdf` (tiles one tattoo across N A4 sheets → multi-page PDF, one sheet per page, with mirror + rotation, plus a `STENCIL_MARGIN_MM` 2mm light-grey safe-area guide drawn as one continuous outer rectangle around the assembled grid). Grid: 1→1×1, 2→1×2, 4→2×2, 8→2×4.
-- `src/store/app-store.ts` — Zustand store: `designerId`, session lifecycle, design state (incl. `targetBodyArea` body-part hint), `persistDesigns` (syncs style/description/target_body_area to `sessions`), `finalizeSession`, `hydrateFromSession`, `replaceReferenceImage`
+- `src/store/app-store.ts` — Zustand store: `designerId`, session lifecycle, design state (incl. `targetBodyArea` body-part hint), `persistDesigns` (syncs style/description/target_body_area to `sessions`), `finalizeSession`, `hydrateFromSession`, `replaceReferenceImage`. Uses `makeThrottledStorage(400ms)` for localStorage persistence — batches rapid writes during generation to one per 400ms
 
 ### Components
 - `src/components/session/SessionOverview.tsx` — **shared read-only session detail view** used by admin and designer. Shows: session card, customer request, reference images, approved design, placement. Header **Download** button opens the Print Studio. Takes `sessionId`, `backUrl`, `backLabel` props.
@@ -134,6 +134,16 @@ All navigation to detail pages passes `?from=<source-url>`. Destination reads it
 
 ## SQL Setup
 Single file: **`supabase-schema.sql`** — creates everything from scratch (tables, RLS, functions, storage buckets, admin seed). The cron cleanup job setup is included at the bottom as a commented block to run after deploy.
+
+---
+
+## Performance Notes
+
+- **Render free tier cold start** — 30–60s on first request after inactivity. Not a code issue; upgrade to paid tier or use an uptime pinger (e.g. UptimeRobot hitting the app every 10 min) to prevent spin-down
+- **Middleware** — parallelised auth + staff lookup saves ~200–400ms per navigation. `getSession()` (cookie-local) gives user ID immediately; `getUser()` + staff DB query run in `Promise.all()`
+- **Page hydration** — design and placement pages render instantly from Zustand localStorage; `hydrateFromSession()` runs in background. Redirect guard fires only after hydration confirms data is genuinely absent
+- **Images** — all Supabase-hosted tattoo images use `next/image` with WebP, correct `sizes`, and 1-year cache TTL. Blob/base64 images (reference uploads, composite preview) stay as `<img>` — `next/image` does not support those URL types
+- **localStorage** — writes throttled to one per 400ms via `makeThrottledStorage` in app-store; prevents main-thread blocking during streaming generation
 
 ---
 

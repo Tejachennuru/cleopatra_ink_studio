@@ -2,6 +2,7 @@
 
 import { use, useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
+import Image from "next/image";
 import { motion, AnimatePresence } from "framer-motion";
 import { useDropzone } from "react-dropzone";
 import { useAppStore } from "@/store/app-store";
@@ -53,7 +54,7 @@ export default function PlacementPage({ params }: { params: Promise<{ sessionId:
     setPlacementDbId,
   } = useAppStore();
 
-  const [hydrating, setHydrating] = useState(true);
+  const [hydrating, setHydrating] = useState(false);
 
   const [inputMode, setInputMode] = useState<"text" | "upload" | "camera">("text");
   const [showCamera, setShowCamera] = useState(false);
@@ -93,17 +94,19 @@ export default function PlacementPage({ params }: { params: Promise<{ sessionId:
   const progressPct = Math.min(95, (elapsed / expectedSeconds) * 100);
 
   // Restore state from Supabase on mount so a reload doesn't kick the user back.
+  // Page renders immediately from localStorage. Hydration runs in background;
+  // redirect only fires after it confirms the required data is genuinely absent.
   useEffect(() => {
     let cancelled = false;
     (async () => {
       await hydrateFromSession(sessionId);
-      if (!cancelled) setHydrating(false);
+      if (!cancelled) setHydrating(true);
     })();
     return () => { cancelled = true; };
   }, [sessionId, hydrateFromSession]);
 
   useEffect(() => {
-    if (hydrating) return;
+    if (!hydrating) return;
     if (!customerName) router.replace("/");
     else if (!selectedDesign) router.replace(`/${sessionId}/design`);
   }, [hydrating, customerName, selectedDesign, sessionId, router]);
@@ -253,12 +256,17 @@ export default function PlacementPage({ params }: { params: Promise<{ sessionId:
             <p className="text-muted text-[10px] font-mono uppercase tracking-widest">Summary</p>
             <div className="flex items-center gap-3">
               <div
-                className="w-14 h-14 rounded-xl overflow-hidden flex-shrink-0 border border-gold/30"
+                className="w-14 h-14 rounded-xl overflow-hidden flex-shrink-0 border border-gold/30 relative"
                 style={{ background: selectedDesign?.gradient }}
               >
                 {selectedDesign?.imageUrl ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img src={selectedDesign.imageUrl} alt={selectedDesign.styleName} className="w-full h-full object-cover" />
+                  <Image
+                    src={selectedDesign.imageUrl}
+                    alt={selectedDesign.styleName ?? "Design"}
+                    fill
+                    sizes="56px"
+                    className="object-cover"
+                  />
                 ) : null}
               </div>
               <div>

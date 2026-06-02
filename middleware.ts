@@ -56,24 +56,32 @@ export async function middleware(request: NextRequest) {
   }
 
   const supabase = makeSupabaseClient(request, response);
-  const { data: { user } } = await supabase.auth.getUser();
+
+  // getSession() reads the JWT from the cookie — no network call, gives us the
+  // user ID immediately so we can fire the staff DB query in parallel with
+  // getUser() (which does the real network validation with Supabase Auth).
+  // Was: getUser() → staff query (sequential). Now: max(getUser, staff query).
+  const { data: { session: localSession } } = await supabase.auth.getSession();
+  const localUserId = localSession?.user?.id;
+
+  const [{ data: { user } }, { data: staffResult }] = await Promise.all([
+    supabase.auth.getUser(),
+    localUserId
+      ? supabase
+          .from("staff")
+          .select("role, is_active, last_login, deleted_at")
+          .eq("id", localUserId)
+          .maybeSingle()
+      : Promise.resolve({ data: null }),
+  ]);
 
   // ── /studio/login — redirect to dashboard if already valid session ──
   if (pathname === "/studio/login") {
-    if (user) {
-      const { data: staff } = await supabase
-        .from("staff")
-        .select("role, is_active, last_login, deleted_at")
-        .eq("id", user.id)
-        .maybeSingle();
-
-      // Only skip login if session is still within 24hr window
-      if (staff && staff.is_active && !staff.deleted_at && !isSessionExpired(staff.last_login)) {
-        const dest = staff.role === "admin" ? "/studio/admin" : "/studio/designer";
+    if (user && staffResult) {
+      if (staffResult.is_active && !staffResult.deleted_at && !isSessionExpired(staffResult.last_login)) {
+        const dest = staffResult.role === "admin" ? "/studio/admin" : "/studio/designer";
         return NextResponse.redirect(new URL(dest, request.url));
       }
-
-      // Session expired or invalid — sign out silently and show login
       await supabase.auth.signOut();
     }
     return response.current;
@@ -86,11 +94,7 @@ export async function middleware(request: NextRequest) {
     return NextResponse.redirect(loginUrl);
   }
 
-  const { data: staff } = await supabase
-    .from("staff")
-    .select("role, is_active, last_login, deleted_at")
-    .eq("id", user.id)
-    .maybeSingle();
+  const staff = staffResult;
 
   // Not a staff member, deactivated, or soft-deleted
   if (!staff || !staff.is_active || staff.deleted_at) {

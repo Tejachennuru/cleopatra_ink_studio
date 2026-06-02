@@ -9,6 +9,8 @@ const nextConfig: NextConfig = {
         pathname: "/storage/v1/object/public/**",
       },
     ],
+    formats: ["image/webp"],
+    minimumCacheTTL: 31536000, // 1 year — generated designs never change
   },
 };
 

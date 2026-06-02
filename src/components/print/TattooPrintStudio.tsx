@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, useEffect, useCallback, useLayoutEffect } from "react";
+import { useRef, useState, useEffect, useCallback, useLayoutEffect, useMemo } from "react";
 import { motion } from "framer-motion";
 import {
   SHEET_COUNTS,
@@ -70,16 +70,19 @@ export default function TattooPrintStudio({ imageUrl, subtitle, filenameBase = "
     return () => ro.disconnect();
   }, []);
 
-  const layout = computeStencilLayout({ count, sizePercent, aspect, center });
-  const { cols, rows, totalW, totalH, tattooLeft, tattooTop, tattooW, tattooH } = layout;
+  const { cols, rows, totalW, totalH, tattooLeft, tattooTop, tattooW, tattooH } = useMemo(
+    () => computeStencilLayout({ count, sizePercent, aspect, center }),
+    [count, sizePercent, aspect, center]
+  );
 
   // Fit the whole grid inside the stage with a little breathing room.
-  const pad = 24;
-  const availW = Math.max(0, stage.w - pad * 2);
-  const availH = Math.max(0, stage.h - pad * 2);
-  const scale = availW > 0 && availH > 0 ? Math.min(availW / totalW, availH / totalH) : 0;
-  const dispW = totalW * scale;
-  const dispH = totalH * scale;
+  const { scale, dispW, dispH } = useMemo(() => {
+    const pad = 24;
+    const availW = Math.max(0, stage.w - pad * 2);
+    const availH = Math.max(0, stage.h - pad * 2);
+    const s = availW > 0 && availH > 0 ? Math.min(availW / totalW, availH / totalH) : 0;
+    return { scale: s, dispW: totalW * s, dispH: totalH * s };
+  }, [stage.w, stage.h, totalW, totalH]);
 
   // ── Drag the tattoo across the grid ───────────────────────────────
   const dragRef = useRef<{ startMX: number; startMY: number; startCX: number; startCY: number } | null>(null);
@@ -132,6 +135,31 @@ export default function TattooPrintStudio({ imageUrl, subtitle, filenameBase = "
     }
   }
 
+  const gridStyle = useMemo(() => ({
+    gridTemplateColumns: `repeat(${cols}, 1fr)`,
+    gridTemplateRows: `repeat(${rows}, 1fr)`,
+  }), [cols, rows]);
+
+  const tattooImgStyle = useMemo(() => ({
+    left: tattooLeft * scale,
+    top: tattooTop * scale,
+    width: tattooW * scale,
+    height: tattooH * scale,
+    maxWidth: "none" as const,
+    maxHeight: "none" as const,
+    transform: `${mirrored ? "scaleX(-1) " : ""}rotate(${rotation}deg)`,
+    touchAction: "none" as const,
+    objectFit: "contain" as const,
+  }), [tattooLeft, tattooTop, tattooW, tattooH, scale, mirrored, rotation]);
+
+  const safeAreaStyle = useMemo(() => ({
+    left: STENCIL_MARGIN_MM * scale,
+    top: STENCIL_MARGIN_MM * scale,
+    right: STENCIL_MARGIN_MM * scale,
+    bottom: STENCIL_MARGIN_MM * scale,
+    border: "1px solid #b4b4b4",
+  }), [scale]);
+
   return (
     <motion.div
       initial={{ opacity: 0 }}
@@ -170,10 +198,7 @@ export default function TattooPrintStudio({ imageUrl, subtitle, filenameBase = "
               {/* Sheet grid overlay — dashed lines show where to cut & tape */}
               <div
                 className="absolute inset-0 grid pointer-events-none z-10"
-                style={{
-                  gridTemplateColumns: `repeat(${cols}, 1fr)`,
-                  gridTemplateRows: `repeat(${rows}, 1fr)`,
-                }}
+                style={gridStyle}
               >
                 {Array.from({ length: cols * rows }).map((_, i) => (
                   <div
@@ -194,13 +219,7 @@ export default function TattooPrintStudio({ imageUrl, subtitle, filenameBase = "
               <div
                 aria-hidden
                 className="absolute pointer-events-none z-30"
-                style={{
-                  left: STENCIL_MARGIN_MM * scale,
-                  top: STENCIL_MARGIN_MM * scale,
-                  right: STENCIL_MARGIN_MM * scale,
-                  bottom: STENCIL_MARGIN_MM * scale,
-                  border: "1px solid #b4b4b4",
-                }}
+                style={safeAreaStyle}
               />
 
               {/* Tattoo — draggable, mirrored in place when toggled */}
@@ -211,21 +230,7 @@ export default function TattooPrintStudio({ imageUrl, subtitle, filenameBase = "
                 onPointerDown={handleDragDown}
                 draggable={false}
                 className="absolute z-20 cursor-move"
-                style={{
-                  left: tattooLeft * scale,
-                  top: tattooTop * scale,
-                  width: tattooW * scale,
-                  height: tattooH * scale,
-                  // Override Tailwind Preflight's `img { max-width: 100% }`, which
-                  // would otherwise cap the width to the paper and stop scaling
-                  // past 100% (making it appear to slide left instead of grow).
-                  maxWidth: "none",
-                  maxHeight: "none",
-                  // Order matches the PDF: mirror, then rotate, about the centre.
-                  transform: `${mirrored ? "scaleX(-1) " : ""}rotate(${rotation}deg)`,
-                  touchAction: "none",
-                  objectFit: "contain",
-                }}
+                style={tattooImgStyle}
               />
             </div>
           )}

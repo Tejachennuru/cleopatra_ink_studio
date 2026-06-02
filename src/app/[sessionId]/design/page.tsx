@@ -4,6 +4,7 @@ import { use, useState, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import { useDropzone } from "react-dropzone";
+import Image from "next/image";
 import { useAppStore } from "@/store/app-store";
 import type { DesignVariant } from "@/store/app-store";
 import CameraCapture from "@/components/camera/CameraCapture";
@@ -13,11 +14,28 @@ import PinterestSearch from "@/components/pinterest/PinterestSearch";
 import { blobUrlToBase64 } from "@/lib/image-utils";
 import { TATTOO_COLORS } from "@/lib/tattoo-colors";
 
-// Shown when the AI image service rejects the request for exhausted credits.
-// Direct copy so studio staff immediately know the fix is to top up the AI
-// credits, not to debug something else.
 const SERVICE_UNAVAILABLE_MSG =
   "AI generation credits are exhausted. Please contact the admin to top up the credits and restore the service.";
+
+// Pre-computed once at module load — avoids parseInt on every render cycle.
+// Maps hex (uppercase) → check icon colour so light swatches stay readable.
+const COLOUR_CHECK: Record<string, string> = Object.fromEntries(
+  TATTOO_COLORS.map((c) => {
+    const r = parseInt(c.hex.slice(1, 3), 16);
+    const g = parseInt(c.hex.slice(3, 5), 16);
+    const b = parseInt(c.hex.slice(5, 7), 16);
+    const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+    return [c.hex.toUpperCase(), lum > 0.55 ? "#0A0A0A" : "#F5F5F5"];
+  })
+);
+
+const STAGE_MESSAGES = [
+  "Reading your brief…",
+  "Sketching variations in your style…",
+  "Refining linework and shading…",
+  "Polishing final details…",
+];
+
 
 export default function DesignPage({ params }: { params: Promise<{ sessionId: string }> }) {
   const { sessionId } = use(params);
@@ -39,7 +57,7 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
     hydrateFromSession,
   } = useAppStore();
 
-  const [hydrating, setHydrating] = useState(true);
+  const [hydrating, setHydrating] = useState(false);
   const [genError, setGenError] = useState<string | null>(null);
   const [lastPayload, setLastPayload] = useState<Record<string, unknown> | null>(null);
   const [elapsed, setElapsed] = useState(0);
@@ -66,12 +84,6 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
     return () => clearInterval(id);
   }, [isGenerating]);
 
-  const STAGE_MESSAGES = [
-    "Reading your brief…",
-    "Sketching variations in your style…",
-    "Refining linework and shading…",
-    "Polishing final details…",
-  ];
   const stageIdx = Math.min(STAGE_MESSAGES.length - 1, Math.floor(elapsed / 25));
   const expectedSeconds = 120;
   const progressPct = Math.min(95, (elapsed / expectedSeconds) * 100);
@@ -95,21 +107,22 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
   const refinementRef = useRef<HTMLDivElement>(null);
 
   // Restore state from Supabase on mount (handles full-page reload mid-session).
-  // persist middleware will have already filled localStorage state synchronously;
-  // this fills in anything missing (e.g. designs from another device).
+  // The page renders immediately from localStorage (Zustand persist). Supabase
+  // hydration runs in the background and fills in anything missing or stale.
+  // Redirect only fires after hydration confirms data is genuinely absent.
   useEffect(() => {
     let cancelled = false;
     (async () => {
       await hydrateFromSession(sessionId);
-      if (!cancelled) setHydrating(false);
+      if (!cancelled) setHydrating(true);
     })();
     return () => { cancelled = true; };
   }, [sessionId, hydrateFromSession]);
 
   useEffect(() => {
-    // Only redirect once hydration has had a chance to run — otherwise a reload
-    // bounces the user back to "/" before persist/Supabase can restore the name.
-    if (!hydrating && !customerName) router.replace("/");
+    // Wait until hydration has confirmed state before redirecting — prevents
+    // a blank-store first render from bouncing the user away.
+    if (hydrating && !customerName) router.replace("/");
   }, [hydrating, customerName, router]);
 
   // Scroll to grid when first image arrives
@@ -428,15 +441,10 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
   // but are swapped to permanent Supabase URLs by replaceReferenceImage once their
   // background upload completes — sending those as base64 corrupts them.
   async function splitReferences(): Promise<{ images: string[]; urls: string[] }> {
-    const images: string[] = [];
-    const urls: string[] = [];
-    for (const ref of referenceImages) {
-      if (ref.startsWith("blob:") || ref.startsWith("data:")) {
-        images.push(await blobUrlToBase64(ref));
-      } else {
-        urls.push(ref);
-      }
-    }
+    const local = referenceImages.filter((r) => r.startsWith("blob:") || r.startsWith("data:"));
+    const urls = referenceImages.filter((r) => !r.startsWith("blob:") && !r.startsWith("data:"));
+    // Convert all local blobs in parallel instead of sequentially
+    const images = await Promise.all(local.map((r) => blobUrlToBase64(r)));
     return { images, urls };
   }
 
@@ -594,11 +602,13 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
               >
                 <div className="aspect-square max-h-[68vh] mx-auto relative">
                   {viewingDesign.imageUrl ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img
+                    <Image
                       src={viewingDesign.imageUrl}
                       alt={viewingDesign.styleName}
-                      className="w-full h-full object-contain"
+                      fill
+                      priority
+                      sizes="(max-width: 768px) 100vw, 68vh"
+                      className="object-contain"
                     />
                   ) : (
                     <DesignPatternSVG type={viewingDesign.patternType} />
@@ -842,13 +852,7 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
                 const isSelected = selectedColors.some(
                   (h) => h.toUpperCase() === c.hex.toUpperCase()
                 );
-                // Luminance — light swatches need a visible border on the dark card,
-                // and the checkmark must flip to dark ink to stay readable on them.
-                const r = parseInt(c.hex.slice(1, 3), 16);
-                const g = parseInt(c.hex.slice(3, 5), 16);
-                const b = parseInt(c.hex.slice(5, 7), 16);
-                const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-                const checkColor = luminance > 0.55 ? "#0A0A0A" : "#F5F5F5";
+                const checkColor = COLOUR_CHECK[c.hex.toUpperCase()] ?? "#F5F5F5";
 
                 return (
                   <button
@@ -938,7 +942,7 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
                       <img src={url} alt={`Reference ${i + 1}`} className="w-full h-full object-cover" />
                       <button
                         onClick={() => handleRemoveReference(i)}
-                        className="absolute top-1 right-1 w-5 h-5 rounded-full bg-error text-white text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity leading-none"
+                        className="absolute top-1 right-1 w-5 h-5 rounded-full bg-red-600 text-white text-xs flex items-center justify-center leading-none shadow-sm"
                       >
                         ×
                       </button>
@@ -1197,8 +1201,13 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
                     >
                       <div className="aspect-square relative" style={{ background: design.gradient }}>
                         {design.imageUrl ? (
-                          // eslint-disable-next-line @next/next/no-img-element
-                          <img src={design.imageUrl} alt={design.styleName} className="w-full h-full object-cover" />
+                          <Image
+                            src={design.imageUrl}
+                            alt={design.styleName}
+                            fill
+                            sizes="(max-width: 640px) 50vw, 25vw"
+                            className="object-cover"
+                          />
                         ) : (
                           <DesignPatternSVG type={design.patternType} />
                         )}
@@ -1331,8 +1340,13 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
                             style={{ background: d.gradient }}
                           >
                             {d.imageUrl ? (
-                              // eslint-disable-next-line @next/next/no-img-element
-                              <img src={d.imageUrl} alt={d.styleName} className="w-full h-full object-cover" />
+                              <Image
+                                src={d.imageUrl}
+                                alt={d.styleName}
+                                fill
+                                sizes="40px"
+                                className="object-cover"
+                              />
                             ) : (
                               <DesignPatternSVG type={d.patternType} />
                             )}

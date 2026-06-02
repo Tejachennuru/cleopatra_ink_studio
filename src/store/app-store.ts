@@ -1,6 +1,23 @@
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
+import type { StateStorage } from "zustand/middleware";
 import { createSupabaseBrowserClient } from "@/lib/supabase-client";
+
+// Throttled localStorage — batches rapid writes (e.g. during streaming generation)
+// into one write per 400ms instead of one per state update. Reads are always instant.
+function makeThrottledStorage(delay = 400): StateStorage {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const base = typeof window !== "undefined" ? localStorage : null;
+  return {
+    getItem: (key) => base?.getItem(key) ?? null,
+    removeItem: (key) => base?.removeItem(key),
+    setItem: (key, value) => {
+      if (!base) return;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => { base.setItem(key, value); timer = null; }, delay);
+    },
+  };
+}
 
 // SSR browser client — picks up staff session from cookies so RLS works correctly
 const supabase = createSupabaseBrowserClient();
@@ -453,7 +470,7 @@ export const useAppStore = create<AppState>()(
     }),
     {
       name: "cleopatra-app-store",
-      storage: createJSONStorage(() => (typeof window !== "undefined" ? localStorage : noopStorage)),
+      storage: createJSONStorage(() => makeThrottledStorage(400)),
       // Persist only what's safe to restore. Blob URLs (referenceImages, bodyPhoto)
       // become invalid after reload; transient flags shouldn't survive.
       partialize: (state) => ({
@@ -489,9 +506,3 @@ const defaultGradients = [
   "radial-gradient(ellipse at 55% 40%, #1a3a1a 0%, #0a1a08 50%, #000500 100%)",
 ];
 
-// SSR-safe noop storage so `persist` doesn't crash before mount.
-const noopStorage = {
-  getItem: () => null,
-  setItem: () => {},
-  removeItem: () => {},
-};

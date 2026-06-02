@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, useEffect, useCallback } from "react";
+import { useRef, useState, useEffect, useCallback, useMemo } from "react";
 import { motion } from "framer-motion";
 
 interface Props {
@@ -91,6 +91,20 @@ export default function TattooPlacementEditor({ bodyPhotoUrl, tattooImageUrl, on
 
   const tattooWidth = size;
   const tattooHeight = tattooAspect > 0 ? size / tattooAspect : size;
+
+  // Memoized — this style object is applied on every pointer move (60fps during drag).
+  // Without memo a new object is created each frame, causing unnecessary reconciliation.
+  const overlayStyle = useMemo(() => ({
+    position: "absolute" as const,
+    left: pos.x - tattooWidth / 2,
+    top: pos.y - tattooHeight / 2,
+    width: tattooWidth,
+    height: tattooHeight,
+    transform: `rotate(${rotation}deg)`,
+    transformOrigin: "center center",
+    cursor: "move",
+    touchAction: "none" as const,
+  }), [pos.x, pos.y, tattooWidth, tattooHeight, rotation]);
 
   // ── Drag ────────────────────────────────────────────────────────────
   const onDragMove = useCallback((e: PointerEvent) => {
@@ -247,17 +261,7 @@ export default function TattooPlacementEditor({ bodyPhotoUrl, tattooImageUrl, on
         {initialized && size > 0 && (
           <div
             onPointerDown={handleDragDown}
-            style={{
-              position: "absolute",
-              left: pos.x - tattooWidth / 2,
-              top: pos.y - tattooHeight / 2,
-              width: tattooWidth,
-              height: tattooHeight,
-              transform: `rotate(${rotation}deg)`,
-              transformOrigin: "center center",
-              cursor: "move",
-              touchAction: "none",
-            }}
+            style={overlayStyle}
           >
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img

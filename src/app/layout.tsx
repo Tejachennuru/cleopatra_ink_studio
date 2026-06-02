@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import type { Viewport } from "next";
 import { Cinzel, Nunito, Space_Mono } from "next/font/google";
 import "./globals.css";
 
@@ -28,6 +29,10 @@ export const metadata: Metadata = {
   description: "AI-Powered Tattoo Design Platform",
 };
 
+export const viewport: Viewport = {
+  themeColor: "#0D0D0D",
+};
+
 export default function RootLayout({
   children,
 }: {
@@ -38,6 +43,10 @@ export default function RootLayout({
       lang="en"
       className={`${cinzel.variable} ${nunito.variable} ${spaceMono.variable} h-full`}
     >
+      <head>
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
+      </head>
       <body className="min-h-full flex flex-col bg-bg text-ink">{children}</body>
     </html>
   );
