@@ -7,10 +7,10 @@ type RunResult =
   | { ok: true; url: string }
   | { ok: false; reason: string; taskId?: string; credits?: boolean };
 
-async function runOneTask(prompt: string, inputUrls: string[]): Promise<RunResult> {
+async function runOneTask(prompt: string, inputUrls: string[], model: "gpt-image-2-image-to-image" | "nano-banana-pro" = "gpt-image-2-image-to-image"): Promise<RunResult> {
   let taskId: string | undefined;
   try {
-    taskId = await createKeiTask(prompt, inputUrls);
+    taskId = await createKeiTask(prompt, inputUrls, { model });
     const url = await waitForKeiTask(taskId);
     return { ok: true, url };
   } catch (err) {
@@ -35,6 +35,8 @@ export async function POST(req: NextRequest) {
     referenceImageUrls = [] as string[],
     refineImageUrls = [] as string[],
     refinementText = "",
+    faithfulMode = false,
+    isTextTattoo = false,
     selectedDesignNames = [] as string[],
     colors = [] as string[],
     targetBodyArea = "",
@@ -66,13 +68,15 @@ export async function POST(req: NextRequest) {
   const hostedRefs = (referenceImageUrls as string[]).filter((u) => typeof u === "string" && u.length > 0);
   const allRefs = [...uploadedRefUrls, ...hostedRefs];
 
+  if (!isRefinement && allRefs.length === 0) {
+    return Response.json({ error: "At least one reference image is required" }, { status: 400 });
+  }
+
   let inputUrls: string[];
   if (isRefinement) {
     inputUrls = [...(refineImageUrls as string[]), ...allRefs];
-  } else if (allRefs.length > 0) {
-    inputUrls = allRefs;
   } else {
-    inputUrls = ["https://upload.wikimedia.org/wikipedia/commons/thumb/2/2f/Culinary_fruits_front_view.jpg/220px-Culinary_fruits_front_view.jpg"];
+    inputUrls = allRefs;
   }
 
   // ── Build prompt ─────────────────────────────────────────────────────
@@ -80,6 +84,7 @@ export async function POST(req: NextRequest) {
   if (isRefinement) {
     refinementInfo = {
       text: refinementText as string,
+      faithfulMode: faithfulMode as boolean,
       selectedImages: (refineImageUrls as string[]).map((_, i) => ({
         name: (selectedDesignNames as string[])[i] ?? `Variation ${i + 1}`,
         index: i + 1,
@@ -88,13 +93,15 @@ export async function POST(req: NextRequest) {
   }
 
   const hasUserRefs = allRefs.length > 0;
+  const generationModel = (isTextTattoo as boolean) ? "nano-banana-pro" : "gpt-image-2-image-to-image";
   const prompt = buildTattooPrompt(
     description,
     style ?? "",
     hasUserRefs,
     refinementInfo,
     Array.isArray(colors) ? (colors as string[]) : [],
-    typeof targetBodyArea === "string" ? targetBodyArea : ""
+    typeof targetBodyArea === "string" ? targetBodyArea : "",
+    isTextTattoo as boolean
   );
 
   // ── Stream results as each task completes ────────────────────────────
@@ -107,7 +114,7 @@ export async function POST(req: NextRequest) {
 
   (async () => {
     const tasks = Array.from({ length: count }, (_, index) =>
-      runOneTask(prompt, inputUrls)
+      runOneTask(prompt, inputUrls, generationModel)
         .then(async (result) => {
           if (!result.ok) {
             console.warn(`[generate] task ${index} failed: ${result.reason}`);

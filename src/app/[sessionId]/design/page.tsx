@@ -70,6 +70,9 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
   // Set when KEI reports exhausted credits — disables retries and shows a clear,
   // non-retryable banner instead of the generic "transient, tap retry" copy.
   const [creditsExhausted, setCreditsExhausted] = useState(false);
+  // Snapshot of the designs that were selected when the last refinement was triggered.
+  // Shown above the refined results grid so staff can compare source vs output.
+  const [refineSourceDesigns, setRefineSourceDesigns] = useState<typeof selectedDesigns>([]);
   const prevDesignCountRef = useRef(0);
 
   // Tick elapsed seconds while a generation is in flight — used for the
@@ -96,9 +99,15 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
   const [directError, setDirectError] = useState<string | null>(null);
   const [proceedingDirect, setProceedingDirect] = useState(false);
 
+  const [faithfulMode, setFaithfulMode] = useState(false);
+  const [isTextTattoo, setIsTextTattoo] = useState(false);
+  const [enhancing, setEnhancing] = useState(false);
+  const [enhancedVariations, setEnhancedVariations] = useState<string[] | null>(null);
+  const [enhanceError, setEnhanceError] = useState<string | null>(null);
   const [inputMode, setInputMode] = useState<"upload" | "camera" | "pinterest">("upload");
   const [showCamera, setShowCamera] = useState(false);
   const [viewingIndex, setViewingIndex] = useState<number | null>(null);
+  const [viewingSourceIndex, setViewingSourceIndex] = useState<number | null>(null);
   // Maps blob URL → Pinterest pin ID so we can show an "Added" badge in the
   // search grid and prevent accidental duplicates. Cleared when the matching
   // reference image is removed.
@@ -150,6 +159,18 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [viewingIndex, generatedDesigns.length]);
+
+  // Keyboard nav for the source designs lightbox
+  useEffect(() => {
+    if (viewingSourceIndex === null) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setViewingSourceIndex(null);
+      if (e.key === "ArrowRight") setViewingSourceIndex((i) => (i === null ? null : (i + 1) % refineSourceDesigns.length));
+      if (e.key === "ArrowLeft") setViewingSourceIndex((i) => (i === null ? null : (i - 1 + refineSourceDesigns.length) % refineSourceDesigns.length));
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [viewingSourceIndex, refineSourceDesigns.length]);
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     accept: { "image/*": [".jpg", ".jpeg", ".png", ".webp", ".heic"] },
@@ -272,7 +293,7 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
     onDrop: handleDirectFileDrop,
   });
 
-  const canGenerate = tattooDescription.trim().length > 0;
+  const canGenerate = tattooDescription.trim().length > 0 && referenceImages.length > 0;
   const hasGenerated = generatedDesigns.length > 0;
   const hasSelection = selectedDesigns.length > 0;
 
@@ -293,6 +314,7 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
     setRetryingSlots(new Set());
     setCreditsExhausted(false);
     setTotalSlots(count);
+    setViewingSourceIndex(null);
     prevDesignCountRef.current = 0;
     generateDesigns(); // clears generatedDesigns, sets isGenerating: true
 
@@ -450,6 +472,7 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
 
   async function handleGenerate() {
     if (!canGenerate) return;
+    setRefineSourceDesigns([]);
     const { images, urls } = await splitReferences();
     callGenerateAPI({
       sessionId,
@@ -457,6 +480,7 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
       style: tattooStyle,
       images,
       referenceImageUrls: urls,
+      isTextTattoo,
       colors: selectedColors,
       targetBodyArea,
       count: 5,
@@ -465,6 +489,8 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
 
   async function handleRefine() {
     if (!refinementText.trim() || selectedDesigns.length === 0) return;
+
+    setRefineSourceDesigns([...selectedDesigns]);
 
     const refineImageUrls = selectedDesigns
       .map((d) => d.imageUrl)
@@ -481,6 +507,8 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
       referenceImageUrls: urls,
       refineImageUrls,
       refinementText,
+      faithfulMode,
+      isTextTattoo,
       selectedDesignNames,
       colors: selectedColors,
       targetBodyArea,
@@ -667,6 +695,81 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
         )}
       </AnimatePresence>
 
+      {/* ── Source designs lightbox ───────────────────────────────────── */}
+      <AnimatePresence>
+        {viewingSourceIndex !== null && refineSourceDesigns[viewingSourceIndex] && (() => {
+          const src = refineSourceDesigns[viewingSourceIndex];
+          return (
+            <motion.div
+              key="source-lightbox"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.2 }}
+              onClick={() => setViewingSourceIndex(null)}
+              className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4 sm:p-8"
+            >
+              <button
+                onClick={(e) => { e.stopPropagation(); setViewingSourceIndex(null); }}
+                className="absolute top-4 right-4 sm:top-6 sm:right-6 w-10 h-10 rounded-full bg-surface/80 border border-cleo-border text-ink hover:bg-error/20 hover:border-error/40 hover:text-error transition-colors flex items-center justify-center text-xl leading-none z-10 cursor-pointer"
+                aria-label="Close"
+              >
+                ×
+              </button>
+
+              {refineSourceDesigns.length > 1 && (
+                <>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setViewingSourceIndex((i) => (i === null ? null : (i - 1 + refineSourceDesigns.length) % refineSourceDesigns.length)); }}
+                    className="absolute left-2 sm:left-6 top-1/2 -translate-y-1/2 w-10 h-10 sm:w-12 sm:h-12 rounded-full bg-surface/80 border border-cleo-border text-ink hover:bg-gold/20 hover:border-gold/40 hover:text-gold transition-colors flex items-center justify-center z-10 cursor-pointer"
+                    aria-label="Previous"
+                  >
+                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" /></svg>
+                  </button>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setViewingSourceIndex((i) => (i === null ? null : (i + 1) % refineSourceDesigns.length)); }}
+                    className="absolute right-2 sm:right-6 top-1/2 -translate-y-1/2 w-10 h-10 sm:w-12 sm:h-12 rounded-full bg-surface/80 border border-cleo-border text-ink hover:bg-gold/20 hover:border-gold/40 hover:text-gold transition-colors flex items-center justify-center z-10 cursor-pointer"
+                    aria-label="Next"
+                  >
+                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
+                  </button>
+                </>
+              )}
+
+              <motion.div
+                key={src.id}
+                initial={{ scale: 0.92, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                exit={{ scale: 0.95, opacity: 0 }}
+                transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
+                onClick={(e) => e.stopPropagation()}
+                className="relative w-full max-w-3xl flex flex-col gap-4 max-h-[90vh]"
+              >
+                <div
+                  className="relative rounded-2xl overflow-hidden border-2 border-gold/30 shadow-[0_0_60px_rgba(201,168,76,0.25)]"
+                  style={{ background: src.gradient }}
+                >
+                  <div className="aspect-square max-h-[68vh] mx-auto relative">
+                    {src.imageUrl ? (
+                      <Image src={src.imageUrl} alt={src.styleName} fill priority sizes="(max-width: 768px) 100vw, 68vh" className="object-contain" />
+                    ) : (
+                      <DesignPatternSVG type={src.patternType} />
+                    )}
+                  </div>
+                  <div className="absolute top-3 left-3 bg-black/70 backdrop-blur-sm text-ink/80 text-xs font-mono px-2.5 py-1 rounded-lg">
+                    Refined from · {refineSourceDesigns.length > 1 ? `${viewingSourceIndex + 1} of ${refineSourceDesigns.length}` : "source"}
+                  </div>
+                </div>
+                <div className="bg-surface border border-cleo-border rounded-2xl p-4 sm:p-5">
+                  <p className="font-cinzel text-base sm:text-lg font-bold text-ink leading-tight">{src.styleName}</p>
+                  <p className="text-muted text-xs mt-0.5">This design was used as the refinement source</p>
+                </div>
+              </motion.div>
+            </motion.div>
+          );
+        })()}
+      </AnimatePresence>
+
       <div className="max-w-5xl mx-auto px-4 sm:px-6 pt-6 sm:pt-8 page-with-mobile-footer flex flex-col gap-6 sm:gap-8">
         {/* Heading */}
         <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4 }}>
@@ -810,7 +913,49 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
 
           {/* Description */}
           <div className="flex flex-col gap-2">
-            <label className="text-xs font-mono tracking-[0.15em] uppercase text-muted">Describe your tattoo</label>
+            <div className="flex items-center justify-between gap-2">
+              <label className="text-xs font-mono tracking-[0.15em] uppercase text-muted">Describe your tattoo</label>
+              {tattooDescription.trim().length > 0 && (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    setEnhancing(true);
+                    setEnhancedVariations(null);
+                    setEnhanceError(null);
+                    try {
+                      const res = await fetch("/api/enhance-prompt", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ description: tattooDescription, style: tattooStyle }),
+                      });
+                      const json = await res.json();
+                      if (!res.ok) throw new Error(json.error ?? "Enhancement failed");
+                      setEnhancedVariations(json.variations);
+                    } catch (err) {
+                      setEnhanceError((err as Error).message);
+                    } finally {
+                      setEnhancing(false);
+                    }
+                  }}
+                  disabled={enhancing}
+                  className="flex items-center gap-1.5 text-[10px] font-cinzel font-bold tracking-[0.08em] uppercase text-gold hover:text-gold-light transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                >
+                  {enhancing ? (
+                    <>
+                      <div className="w-3 h-3 border border-gold border-t-transparent rounded-full animate-spin" />
+                      Enhancing…
+                    </>
+                  ) : (
+                    <>
+                      <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z" />
+                      </svg>
+                      Enhance with AI
+                    </>
+                  )}
+                </button>
+              )}
+            </div>
             <textarea
               rows={4}
               placeholder={
@@ -819,9 +964,79 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
                   : "e.g. A detailed mandala with lotus petals, geometric outer rings, and a crescent moon at the top. Fine lines, sacred geometry feel…"
               }
               value={tattooDescription}
-              onChange={(e) => setTattooDescription(e.target.value)}
+              onChange={(e) => { setTattooDescription(e.target.value); setEnhancedVariations(null); setEnhanceError(null); }}
               className="bg-bg border border-cleo-border rounded-xl px-4 py-3.5 text-ink text-sm placeholder:text-muted/50 focus:border-gold focus:outline-none transition-colors resize-none leading-relaxed"
             />
+
+            {/* Enhance error */}
+            {enhanceError && (
+              <p className="text-error text-[10px] font-mono">{enhanceError}</p>
+            )}
+
+            {/* Enhanced variations panel */}
+            <AnimatePresence>
+              {enhancedVariations && enhancedVariations.length > 0 && (
+                <motion.div
+                  initial={{ opacity: 0, y: -6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -6 }}
+                  transition={{ duration: 0.2 }}
+                  className="flex flex-col gap-2"
+                >
+                  <div className="flex items-center justify-between">
+                    <p className="text-[10px] font-mono tracking-[0.15em] uppercase text-gold">
+                      ✦ {enhancedVariations.length} enhanced versions — tap to use
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => setEnhancedVariations(null)}
+                      className="text-muted hover:text-ink text-xs transition-colors cursor-pointer"
+                    >
+                      ✕ Dismiss
+                    </button>
+                  </div>
+                  {enhancedVariations.map((variation, i) => (
+                    <button
+                      key={i}
+                      type="button"
+                      onClick={() => { setTattooDescription(variation); setEnhancedVariations(null); }}
+                      className="text-left w-full bg-bg border border-cleo-border hover:border-gold/50 hover:bg-gold/5 rounded-xl px-4 py-3 transition-colors cursor-pointer group"
+                    >
+                      <p className="text-[10px] font-mono text-gold/70 mb-1 group-hover:text-gold transition-colors">
+                        Version {i + 1}
+                      </p>
+                      <p className="text-ink text-xs leading-relaxed">{variation}</p>
+                    </button>
+                  ))}
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+
+          {/* Text tattoo toggle */}
+          <div className="flex items-center gap-3 p-3 bg-bg rounded-xl border border-cleo-border">
+            <div className="flex-1 min-w-0">
+              <p className="text-xs font-cinzel font-bold text-ink leading-tight">
+                {isTextTattoo ? "Text Tattoo Mode" : "Standard Design Mode"}
+              </p>
+              <p className="text-muted text-[10px] mt-0.5 leading-snug">
+                {isTextTattoo
+                  ? "Uses a text-optimised model — accurate fonts, lettering & mixed elements"
+                  : "Turn on if the tattoo contains words, names, quotes, or lettering"}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setIsTextTattoo((v) => !v)}
+              aria-pressed={isTextTattoo}
+              className={`flex-shrink-0 w-11 h-6 rounded-full border transition-colors cursor-pointer flex items-center px-0.5 ${
+                isTextTattoo
+                  ? "bg-gold border-gold justify-end"
+                  : "bg-surface-2 border-cleo-border justify-start"
+              }`}
+            >
+              <span className={`w-5 h-5 rounded-full shadow transition-all ${isTextTattoo ? "bg-bg" : "bg-muted"}`} />
+            </button>
           </div>
 
           {/* Colour palette */}
@@ -899,7 +1114,7 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
             <div className="flex items-center justify-between flex-wrap gap-2">
               <div className="flex items-center gap-2">
                 <label className="text-xs font-mono tracking-[0.15em] uppercase text-muted">
-                  Reference Images <span className="text-muted/40 normal-case">(optional)</span>
+                  Reference Images <span className="text-error/70 normal-case font-mono">*required</span>
                 </label>
                 {referenceImages.length > 0 && (
                   <span className="text-[10px] font-mono text-gold bg-gold/10 border border-gold/30 px-2 py-0.5 rounded-full">
@@ -1065,7 +1280,11 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
             {isGenerating
               ? "Generating…"
               : hasGenerated
-              ? `✦ Regenerate from Scratch`
+              ? "✦ Regenerate from Scratch"
+              : !tattooDescription.trim()
+              ? "Describe your tattoo first"
+              : referenceImages.length === 0
+              ? "Add a reference image to generate"
               : "✦ Generate Tattoo Designs"}
           </motion.button>
         </motion.div>
@@ -1133,6 +1352,48 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
               animate={{ opacity: 1 }}
               className="flex flex-col gap-5"
             >
+              {/* Refined-from strip — shown when this is a refinement pass */}
+              {iterationCount > 1 && refineSourceDesigns.length > 0 && (
+                <div className="flex flex-col gap-2.5 p-3 sm:p-4 bg-bg rounded-xl border border-cleo-border/60">
+                  <p className="text-[10px] font-mono tracking-[0.15em] uppercase text-muted">
+                    Refined from
+                  </p>
+                  <div className="flex items-start gap-3 flex-wrap">
+                    {refineSourceDesigns.map((d, i) => (
+                      <button
+                        key={d.id}
+                        type="button"
+                        onClick={() => setViewingSourceIndex(i)}
+                        className="group flex flex-col gap-1.5 cursor-pointer"
+                      >
+                        <div
+                          className="w-24 h-24 sm:w-28 sm:h-28 rounded-xl overflow-hidden border-2 border-cleo-border group-hover:border-gold/50 transition-colors relative flex-shrink-0"
+                          style={{ background: d.gradient }}
+                        >
+                          {d.imageUrl ? (
+                            <Image
+                              src={d.imageUrl}
+                              alt={d.styleName}
+                              fill
+                              sizes="112px"
+                              className="object-cover"
+                            />
+                          ) : (
+                            <DesignPatternSVG type={d.patternType} />
+                          )}
+                          <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-colors flex items-center justify-center">
+                            <span className="opacity-0 group-hover:opacity-100 transition-opacity text-white text-xs font-mono">🔍 View</span>
+                          </div>
+                        </div>
+                        <p className="text-muted text-[10px] font-cinzel text-center w-24 sm:w-28 truncate group-hover:text-ink transition-colors">
+                          {refineSourceDesigns.length > 1 ? `Image ${i + 1}` : d.styleName}
+                        </p>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {/* Header row */}
               <div className="flex items-start sm:items-center justify-between gap-3">
                 <div className="min-w-0">
@@ -1211,13 +1472,11 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
                         ) : (
                           <DesignPatternSVG type={design.patternType} />
                         )}
-                        {isSelected ? (
+                        {isSelected && (
                           <motion.div initial={{ scale: 0 }} animate={{ scale: 1 }}
                             className="absolute top-2 right-2 w-7 h-7 rounded-full bg-gold shadow-lg flex items-center justify-center">
                             <span className="text-bg text-xs font-black font-mono">{selectionOrder}</span>
                           </motion.div>
-                        ) : (
-                          <div className="absolute top-2 right-2 w-6 h-6 rounded-full border-2 border-white/30 bg-black/30 backdrop-blur-sm" />
                         )}
                         <div className="absolute top-2 left-2">
                           <span className="bg-black/60 backdrop-blur-sm text-ink/70 text-[9px] font-mono px-1.5 py-0.5 rounded">
@@ -1230,6 +1489,30 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
                             🔍 View
                           </span>
                         </div>
+                        {design.imageUrl && (
+                          <button
+                            type="button"
+                            onClick={async (e) => {
+                              e.stopPropagation();
+                              try {
+                                const res = await fetch(`/api/proxy-image?url=${encodeURIComponent(design.imageUrl!)}`);
+                                const blob = await res.blob();
+                                const blobUrl = URL.createObjectURL(blob);
+                                const a = document.createElement("a");
+                                a.href = blobUrl;
+                                a.download = `${design.styleName.replace(/\s+/g, "-")}.png`;
+                                a.click();
+                                URL.revokeObjectURL(blobUrl);
+                              } catch { /* silent — image still viewable */ }
+                            }}
+                            className="absolute bottom-2 right-2 w-8 h-8 rounded-full bg-black/60 backdrop-blur-sm border border-white/20 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-gold hover:border-gold z-10 cursor-pointer"
+                            aria-label={`Download ${design.styleName}`}
+                          >
+                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5 5-5M12 15V3" />
+                            </svg>
+                          </button>
+                        )}
                       </div>
                       <div className={`px-3 py-2.5 transition-colors ${isSelected ? "bg-gold/10" : "bg-surface"}`}>
                         <p className={`text-xs font-cinzel font-bold leading-tight ${isSelected ? "text-gold" : "text-ink"}`}>
@@ -1375,6 +1658,32 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
               </div>
 
               <div className="p-4 sm:p-5 flex flex-col gap-4">
+                {/* Faithful / Creative toggle */}
+                <div className="flex items-center gap-3 p-3 bg-bg rounded-xl border border-cleo-border">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-cinzel font-bold text-ink leading-tight">
+                      {faithfulMode ? "Minor Changes Only" : "Creative Variation"}
+                    </p>
+                    <p className="text-muted text-[10px] mt-0.5 leading-snug">
+                      {faithfulMode
+                        ? "Preserve the selected design exactly — apply only the changes you describe"
+                        : "Blend and reinterpret the selected design with creative freedom"}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setFaithfulMode((v) => !v)}
+                    aria-pressed={faithfulMode}
+                    className={`flex-shrink-0 w-11 h-6 rounded-full border transition-colors cursor-pointer flex items-center px-0.5 ${
+                      faithfulMode
+                        ? "bg-gold border-gold justify-end"
+                        : "bg-surface-2 border-cleo-border justify-start"
+                    }`}
+                  >
+                    <span className={`w-5 h-5 rounded-full shadow transition-all ${faithfulMode ? "bg-bg" : "bg-muted"}`} />
+                  </button>
+                </div>
+
                 {/* Refinement input */}
                 <div className="flex flex-col gap-2">
                   <label className="text-xs font-mono tracking-[0.15em] uppercase text-muted">
@@ -1383,7 +1692,9 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
                   <textarea
                     rows={3}
                     placeholder={
-                      selectedDesigns.length > 1
+                      faithfulMode
+                        ? `e.g. Make the linework slightly bolder, add a small star above the main element, darken the shading in the background only…`
+                        : selectedDesigns.length > 1
                         ? `e.g. I love the linework style of Image 1 (${selectedDesigns[0]?.styleName}) and the colour/shading of Image 2 (${selectedDesigns[1]?.styleName}). Combine them — keep Image 1's composition but use Image 2's shading technique…`
                         : `e.g. Keep the overall composition of ${selectedDesigns[0]?.styleName ?? "this design"} but make the linework bolder, add more detail in the centre, and darken the shading…`
                     }
@@ -1482,7 +1793,13 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
                 : "bg-surface-2 text-muted border-cleo-border cursor-not-allowed"
             }`}
           >
-            {hasGenerated ? "✦ Regenerate" : canGenerate ? "✦ Generate Designs" : "Describe your tattoo first"}
+            {hasGenerated
+              ? "✦ Regenerate"
+              : !tattooDescription.trim()
+              ? "Describe your tattoo first"
+              : referenceImages.length === 0
+              ? "Add a reference image"
+              : "✦ Generate Designs"}
           </button>
         )}
       </div>

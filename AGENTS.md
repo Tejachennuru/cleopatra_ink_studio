@@ -1,47 +1,47 @@
 # Cleopatra Ink Studio — Agent Reference
 
 ## What This Is
-AI-powered tattoo design platform for **in-shop use by staff (designers + admin)**. A designer creates or looks up a customer by phone, runs the tattoo design flow (style → generate → refine → placement → finalize), and the admin manages the studio. Customers never log in — the staff acts on their behalf.
+AI-powered tattoo design platform for **in-shop use by staff (designers + admin)**. A designer creates or looks up a customer by phone, runs the tattoo design flow (style → generate → refine → placement → finalize), and the admin manages the studio. Customers never log in — staff acts on their behalf.
 
 ## Stack
-- **Framework:** Next.js (App Router) + TypeScript strict mode — read `node_modules/next/dist/docs/` before writing any Next.js code. Breaking changes exist.
+- **Framework:** Next.js (App Router) + TypeScript strict mode
 - **Auth:** Supabase Auth (email + password) via `@supabase/ssr` cookie-based sessions
-- **State:** Zustand with localStorage persistence + Supabase hydration (`src/store/app-store.ts`)
+- **State:** Zustand with throttled localStorage persistence + Supabase hydration (`src/store/app-store.ts`)
 - **Database & Storage:** Supabase PostgreSQL + Storage bucket `session-assets`
-- **Image Generation:** KEI API (`api.kie.ai`). Design generation uses `gpt-image-2-image-to-image`; the final body-placement render uses `nano-banana-pro` (Gemini 3 Pro Image). NOT Claude or DALL-E.
+- **Image Generation:** KEI API (`api.kie.ai`). Design generation uses `gpt-image-2-image-to-image` by default; switches to `nano-banana-pro` (Gemini 3 Pro Image) when Text Tattoo mode is on. Placement render always uses `nano-banana-pro`. NOT Claude or DALL-E. Reference image is mandatory for design generation — no fallback.
 - **Styling:** Tailwind CSS v4. Dark luxury theme: bg `#0D0D0D`, gold `#C9A84C`, font Cinzel.
 
 ---
 
 ## Route Map
 
-### Public (no auth)
+### Public
 | Route | Purpose |
 |-------|---------|
-| `/studio/login` | Staff login (email + password). First page shown to everyone. |
+| `/studio/login` | Staff login — first page shown to everyone |
 
-### Staff — shared (designer + admin)
+### Staff — shared
 | Route | Purpose |
 |-------|---------|
-| `/` | Logo splash → auto-redirects based on role |
-| `/customer/[userId]` | Customer history (session list). Accepts `?from=` for back navigation. |
-| `/studio/sessions/[id]` | Session overview (read-only). Accepts `?from=` for back navigation. |
-| `/[sessionId]/design` | Design flow: AI mode (style → generate → refine) OR Direct Upload mode (upload existing design) |
-| `/[sessionId]/placement` | Body placement canvas + composite generation |
+| `/` | Logo splash → auto-redirects by role |
+| `/customer/[userId]` | Customer tattoo history |
+| `/studio/sessions/[id]` | Session overview (read-only) |
+| `/[sessionId]/design` | AI Design mode OR Direct Upload mode |
+| `/[sessionId]/placement` | Body placement editor + composite generation |
 
 ### Designer only
 | Route | Purpose |
 |-------|---------|
-| `/studio/designer` | Designer dashboard: phone lookup, new customer, recent 5 sessions |
+| `/studio/designer` | Dashboard: phone lookup, new customer, recent sessions |
 
-### Admin only (`/studio/admin/*`)
+### Admin only
 | Route | Purpose |
 |-------|---------|
-| `/studio/admin` | Overview: stats, designer list, recent 5 sessions |
-| `/studio/admin/customers` | All customers with live search by name/phone |
-| `/studio/admin/sessions/[id]` | Admin session overview. Accepts `?from=` for back navigation. |
-| `/studio/admin/designers/[id]` | Designer detail: profile, all their sessions + design thumbnails |
-| `/studio/admin/designers/new` | Create new designer account |
+| `/studio/admin` | Stats, designer list, recent sessions |
+| `/studio/admin/customers` | All customers with live search |
+| `/studio/admin/sessions/[id]` | Admin session view |
+| `/studio/admin/designers/[id]` | Designer profile + password reset |
+| `/studio/admin/designers/new` | Create designer account |
 | `/studio/admin/settings` | Change admin password |
 
 ---
@@ -49,101 +49,78 @@ AI-powered tattoo design platform for **in-shop use by staff (designers + admin)
 ## API Routes
 | Route | Purpose |
 |-------|---------|
-| `POST /api/generate` | Fires 5 KEI tasks (`gpt-image-2-image-to-image`) in parallel; **streams** NDJSON — each task emits `{type:"result"}` or `{type:"error"}` (with `code:"insufficient_credits"` when out of credits), followed by `{type:"done"}`. References: base64 in `images[]` (fresh uploads) + already-hosted URLs in `referenceImageUrls[]` (Pinterest pins) |
-| `POST /api/upload-ref` | Uploads base64 image to Supabase Storage. `prefix` param: `"refs"` (default) or `"designs"` (direct upload mode) |
-| `POST /api/placement` | Generates body+tattoo composite via KEI `nano-banana-pro`. Returns `402` + `code:"insufficient_credits"` when out of credits (no retry); `504` timeout; `502` other |
-| `GET /api/pinterest/search` | Pinterest reference image search |
+| `POST /api/generate` | 5 KEI tasks in parallel; streams NDJSON — each task emits `{type:"result"}` or `{type:"error"}`, then `{type:"done"}`. References: base64 in `images[]` + hosted URLs in `referenceImageUrls[]`. At least one reference image is required (no fallback). Accepts `isTextTattoo` (bool) to switch model to `nano-banana-pro` and use text-optimised prompt. Accepts `faithfulMode` (bool) to use minor-changes-only refinement prompt. |
+| `POST /api/upload-ref` | Uploads base64 to Supabase Storage. `prefix`: `"refs"` or `"designs"` |
+| `POST /api/placement` | Composite generation via `nano-banana-pro`. Returns `402` (credits), `504` (timeout), `502` (other) |
+| `POST /api/enhance-prompt` | Calls OpenAI GPT-4o-mini to generate 3 enhanced tattoo description variations from a raw staff input. Body: `{ description, style? }`. Returns `{ variations: string[] }`. Requires `OPENAI_API_KEY` env var. |
+| `GET /api/pinterest/search` | Pinterest reference search |
 | `GET /api/pinterest/image` | Pinterest image proxy (CORS bypass) |
 | `GET /api/proxy-image` | General image proxy |
 | `GET /api/studio/designers` | List all staff, excluding soft-deleted (admin only) |
-| `POST /api/studio/designers` | Create designer via Supabase Admin API (admin only) |
-| `PATCH /api/studio/designers` | Toggle `is_active` on a designer (admin only) |
-| `PUT /api/studio/designers` | Reset a designer's password — applied to Supabase Auth only, never stored. Blocks self / admin / soft-deleted targets (admin only) |
-| `DELETE /api/studio/designers` | Soft-delete a designer: sets `deleted_at = now()` + `is_active = false`. Staff row is preserved so historical sessions still resolve "designed by X". Blocks self / admin (admin only) |
-| `POST /api/studio/logout` | Sign out staff |
-| `GET /api/cron/cleanup` | Delete expired sessions (active + older than 24hr) + their storage files |
+| `POST /api/studio/designers` | Create designer (admin only) |
+| `PATCH /api/studio/designers` | Toggle `is_active` (admin only) |
+| `PUT /api/studio/designers` | Reset password — Supabase Auth only, never stored (admin only) |
+| `DELETE /api/studio/designers` | Soft-delete designer (admin only) |
+| `POST /api/studio/logout` | Sign out |
+| `GET /api/cron/cleanup` | Delete sessions older than 24hr + storage files |
 
 ---
 
-## Database Tables (Supabase)
+## Database Tables
 
 | Table | Key columns |
 |-------|-------------|
-| `auth.users` | Supabase Auth — staff login accounts |
-| `staff` | `id` (= auth.users.id), `email`, `name`, `role` (admin\|designer), `is_active`, `last_login`, `deleted_at` (soft-delete marker — non-null hides the row from the admin list & blocks login; the row is kept so historical "designed by X" still resolves) |
-| `users` | `id`, `first_name`, `phone` — customers (no auth, identified by phone) |
-| `sessions` | `id`, `user_id`, `designer_id`, `tattoo_style`, `tattoo_description`, `target_body_area` (optional design-time hint, fed into the generation prompt), `status`, `created_at`, `completed_at` |
+| `auth.users` | Supabase Auth — staff accounts |
+| `staff` | `id`, `email`, `name`, `role` (admin\|designer), `is_active`, `last_login`, `deleted_at` |
+| `users` | `id`, `first_name`, `phone` — customers (no auth) |
+| `sessions` | `id`, `user_id`, `designer_id`, `tattoo_style`, `tattoo_description`, `target_body_area`, `status` |
 | `tattoo_designs` | `id`, `session_id`, `image_url`, `style_name`, `pattern_type`, `iteration`, `is_finalized` |
 | `placements` | `id`, `session_id`, `placement_text`, `body_photo_url`, `final_composite_url`, `is_finalized` |
 | `user_preferences` | `user_id`, `preferred_styles[]`, `preferred_placements[]` |
 
-**RPC:** `finalize_session(p_session_id, p_design_id, p_placement_id)` — marks finalized rows, prunes siblings, marks session completed, updates user_preferences.
+**RPC:** `finalize_session(p_session_id, p_design_id, p_placement_id)` — marks finalized rows, prunes siblings, completes session, updates preferences.
 
-**RLS:** Admin sees all rows. Designer sees only sessions where `designer_id = auth.uid()`. Service role (API routes) bypasses RLS.
+**RLS:** Admin sees all. Designer sees only own sessions. Service role (API routes) bypasses RLS.
 
 ---
 
 ## Key Files
 
 ### Auth & Security
-- `middleware.ts` — runs on every request; blocks unauthenticated → `/studio/login`; blocks designers from `/studio/admin/*`; enforces 24hr session timeout via `last_login`; rejects soft-deleted designers (`deleted_at != null`). Uses `getSession()` (cookie-local, no network) to extract user ID, then fires `getUser()` + staff DB query in `Promise.all()` — parallel, not sequential
-- `src/lib/supabase-server.ts` — server-only: `createSupabaseServerClient`, `createServiceClient`, `getStaffSession`
-- `src/lib/supabase-client.ts` — browser-only: `createSupabaseBrowserClient` (cookie-based, safe in `"use client"`)
-- `src/lib/staff-types.ts` — `StaffMember`, `StaffRole` types (safe to import anywhere)
+- `middleware.ts` — route protection, 24hr timeout, soft-delete check. Uses `getSession()` (cookie-local) then `Promise.all(getUser, staff query)` — parallel, not sequential
+- `src/lib/supabase-server.ts` — `createSupabaseServerClient`, `createServiceClient`, `getStaffSession`
+- `src/lib/supabase-client.ts` — `createSupabaseBrowserClient` (safe in `"use client"`)
 - `src/lib/auth-utils.ts` — `getClientRole()`, `resolveBackUrl()` — role-validated back navigation
 
 ### Core Logic
-- `src/lib/prompts.ts` — **ALL AI prompts live here**: `buildInitialDesignPrompt`, `buildRefinementPrompt`, `buildTattooPrompt`, `buildPlacementPrompt`, `buildCompositePrompt`. `STYLE_PROMPT_DESCRIPTORS` maps every style to specific visual language (linework, shading, color, composition, feel, subjects); injected via `buildStyleBlock(style)`. `buildBodyAreaBlock()` adds a design-time body area hint + "no anatomy in output" constraint. Composite mode: image 1 = composite (position + size locked), image 2 = clean design (detail reference only, not for recomposition), image 3 = body photo (skin/lighting).
-- `src/lib/kei-api.ts` — pure KEI HTTP client: `createKeiTask(prompt, urls, {model})`, `waitForKeiTask`, `KeiTaskFailedError`, `KeiCreditsError` (non-retryable).
-- `src/lib/storage.ts` — `uploadBase64`, `uploadFromUrl` to Supabase Storage bucket `session-assets`
-- `src/lib/tattoo-colors.ts` — curated ink palette, `getColorsByHex`
-- `src/lib/tattoo-pdf.ts` — **print/stencil engine**: `computeStencilLayout`, `defaultStencilCenter`, `loadTrimmedStencilImage` (auto-crops the design's empty frame to the actual ink), `downloadTattooStencilPdf` (tiles one tattoo across N A4 sheets → multi-page PDF, one sheet per page, with mirror + rotation, plus a `STENCIL_MARGIN_MM` 2mm light-grey safe-area guide drawn as one continuous outer rectangle around the assembled grid). Grid: 1→1×1, 2→1×2, 4→2×2, 8→2×4.
-- `src/store/app-store.ts` — Zustand store: `designerId`, session lifecycle, design state (incl. `targetBodyArea` body-part hint), `persistDesigns` (syncs style/description/target_body_area to `sessions`), `finalizeSession`, `hydrateFromSession`, `replaceReferenceImage`. Uses `makeThrottledStorage(400ms)` for localStorage persistence — batches rapid writes during generation to one per 400ms
+- `src/lib/prompts.ts` — **ALL AI prompts**. `STYLE_PROMPT_DESCRIPTORS` maps 70+ styles to visual language via `buildStyleBlock()`. `buildBodyAreaBlock()` injects body area hint + no-anatomy constraint. Composite mode: image 1 = composite (position/size locked), image 2 = clean design (detail only), image 3 = body photo (skin/lighting). Five prompt builders: `buildInitialDesignPrompt`, `buildRefinementPrompt`, `buildFaithfulRefinementPrompt` (minor changes only), `buildTextTattooPrompt` + `buildTextTattooRefinementPrompt` (text/lettering, uses nano-banana-pro). Unified entry: `buildTattooPrompt(desc, style, hasRefs, refinement?, colors?, bodyArea?, isTextTattoo?)`
+- `src/lib/kei-api.ts` — KEI HTTP client: `createKeiTask`, `waitForKeiTask`, `KeiTaskFailedError`, `KeiCreditsError`
+- `src/lib/storage.ts` — `uploadBase64`, `uploadFromUrl` to `session-assets` bucket
+- `src/lib/tattoo-colors.ts` — ink palette (`TATTOO_COLORS`), `getColorsByHex`
+- `src/lib/tattoo-pdf.ts` — stencil engine: `computeStencilLayout`, `loadTrimmedStencilImage`, `downloadTattooStencilPdf` (multi-page A4, mirror + rotation, 2mm safe-area guide)
+- `src/store/app-store.ts` — Zustand store. `makeThrottledStorage(400ms)` batches localStorage writes. Pages render from store immediately; `hydrateFromSession()` syncs from Supabase in background
 
 ### Components
-- `src/components/session/SessionOverview.tsx` — **shared read-only session detail view** used by admin and designer. Shows: session card, customer request, reference images, approved design, placement. Header **Download** button opens the Print Studio. Takes `sessionId`, `backUrl`, `backLabel` props.
-- `src/components/print/TattooPrintStudio.tsx` — full-screen A4 print/stencil modal (replaces the old "Preview Sizes" PDF). Left "lightroom" canvas (drag to position the tattoo over the sheet grid) + right sidebar controls: A4 count (1/2/4/8), size %, rotation (0/90/180/270 + slider), mirror toggle (default ON — for skin transfer). Downloads a multi-page A4 PDF via `downloadTattooStencilPdf`.
-- `src/components/placement/TattooPlacementEditor.tsx` — canvas drag/scale/rotate overlay
+- `src/components/session/SessionOverview.tsx` — shared read-only session view (admin + designer)
+- `src/components/print/TattooPrintStudio.tsx` — A4 print modal. `computeStencilLayout` and style objects memoised
+- `src/components/placement/TattooPlacementEditor.tsx` — drag/scale/rotate canvas overlay. Overlay style memoised for 60fps drag performance
+- `src/components/ui/StyleSelect.tsx` — searchable style dropdown (70+ styles by category)
 - `src/components/pinterest/PinterestSearch.tsx` — Pinterest reference search UI
 
 ---
 
-## Staff Flow (Current Entry Point)
-1. Staff navigates to any URL → middleware checks auth + 24hr timeout → redirects to `/studio/login` if needed
-2. Login → `last_login` stamped in `staff` table → redirected to `/studio/designer` or `/studio/admin`
-3. **Designer:** phone lookup → existing customer (go to `/customer/[userId]`) or new customer (create user + session) → `/[sessionId]/design`
-4. **Design flow — two modes on `/[sessionId]/design`:**
-   - **AI Design** (default): style + description → 5 KEI tasks in parallel → variation gallery → refine loop → proceed
-   - **Direct Upload**: customer has an existing design → upload image → saved as final design → proceed directly to placement
-5. **Placement:** upload body photo → composite generated → finalize → `finalizeSession()` RPC
-6. **Admin:** views stats, manages designers (activate/deactivate, create), views all customers + sessions
-
----
-
-## Session Cleanup (Cron)
-- `GET /api/cron/cleanup` — deletes `active` sessions older than 24 hours + all their Supabase Storage files (`refs/`, `designs/`, `body/`, `composites/`, `previews/`)
-- Triggered by Supabase pg_cron via `pg_net.http_get()` every 30 minutes
-- Setup SQL: `supabase-cron-cleanup.sql`
-
----
-
-## Back Navigation Pattern
-All navigation to detail pages passes `?from=<source-url>`. Destination reads it via `useSearchParams` (client) or `searchParams` prop (server) and calls `resolveBackUrl()` which validates the URL against the user's actual role — admin URLs are stripped for designers.
+## Staff Flow
+1. Any URL → middleware checks auth + timeout → `/studio/login` if needed
+2. Login → `last_login` stamped → redirect to `/studio/designer` or `/studio/admin`
+3. Designer: phone lookup → new or existing customer → `/[sessionId]/design`
+4. Design: AI mode (generate → refine) or Direct Upload → select design → proceed
+5. Placement: upload photo → editor → generate composite → finalize
+6. Admin: stats, manage designers, view all customers + sessions
 
 ---
 
 ## SQL Setup
-Single file: **`supabase-schema.sql`** — creates everything from scratch (tables, RLS, functions, storage buckets, admin seed). The cron cleanup job setup is included at the bottom as a commented block to run after deploy.
-
----
-
-## Performance Notes
-
-- **Render free tier cold start** — 30–60s on first request after inactivity. Not a code issue; upgrade to paid tier or use an uptime pinger (e.g. UptimeRobot hitting the app every 10 min) to prevent spin-down
-- **Middleware** — parallelised auth + staff lookup saves ~200–400ms per navigation. `getSession()` (cookie-local) gives user ID immediately; `getUser()` + staff DB query run in `Promise.all()`
-- **Page hydration** — design and placement pages render instantly from Zustand localStorage; `hydrateFromSession()` runs in background. Redirect guard fires only after hydration confirms data is genuinely absent
-- **Images** — all Supabase-hosted tattoo images use `next/image` with WebP, correct `sizes`, and 1-year cache TTL. Blob/base64 images (reference uploads, composite preview) stay as `<img>` — `next/image` does not support those URL types
-- **localStorage** — writes throttled to one per 400ms via `makeThrottledStorage` in app-store; prevents main-thread blocking during streaming generation
+Single file: **`supabase-schema.sql`** — tables, RLS, functions, storage buckets, admin seed. Run the cron block at the bottom manually after deploy (requires `pg_cron` + `pg_net` enabled in Supabase Dashboard).
 
 ---
 
@@ -153,6 +130,7 @@ NEXT_PUBLIC_SUPABASE_URL
 NEXT_PUBLIC_SUPABASE_ANON_KEY
 SUPABASE_SERVICE_ROLE_KEY
 KEI_API_KEY
-CRON_SECRET                    # shared secret between app and pg_net cron caller
+OPENAI_API_KEY                 # used by /api/enhance-prompt (GPT-4o-mini description enhancer)
+CRON_SECRET                    # shared secret for cron endpoint
 PINTEREST_ACCESS_TOKEN         # optional
 ```

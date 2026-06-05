@@ -15,6 +15,7 @@ export interface RefinementImage {
 export interface RefinementInfo {
   text: string;
   selectedImages: RefinementImage[];
+  faithfulMode?: boolean;
 }
 
 // ── Style Descriptors ────────────────────────────────────────
@@ -768,6 +769,175 @@ ${palette.constraint}
 `.trim();
 }
 
+// ── 2b. TATTOO DESIGN — Faithful Refinement (minor changes only) ──
+
+export function buildFaithfulRefinementPrompt(
+  description: string,
+  style: string,
+  refinement: RefinementInfo,
+  colorHexes: string[] = [],
+  targetBodyArea: string = ""
+): string {
+  const styleLabel = style || "fine-line black-and-grey";
+  const palette = buildPaletteBlock(colorHexes);
+  const bodyArea = buildBodyAreaBlock(targetBodyArea);
+
+  const imageLabels = refinement.selectedImages
+    .map((img) => `  - Image ${img.index}: "${img.name}"`)
+    .join("\n");
+
+  return `
+Apply ONLY the following minor changes to this tattoo design. Preserve everything else exactly.
+
+ORIGINAL DESIGN:
+${imageLabels}
+
+REQUESTED CHANGES (apply ONLY these — nothing else):
+"${refinement.text.trim()}"
+
+PRESERVATION RULES — these are MANDATORY:
+- Keep the exact same composition, layout, and proportions
+- Keep the exact same linework weight and style
+- Keep the exact same shading technique and tonal values
+- Keep all existing motifs, elements, and symbols unless directly mentioned in the changes
+- Keep the same overall size and spatial balance of the design
+- Do NOT add new elements unless explicitly requested
+- Do NOT "improve" or "enhance" anything not mentioned in the changes
+- The result must look like the original with only the specific changes applied
+
+ORIGINAL DESIGN CONTEXT:
+${description.trim()} — ${styleLabel} style
+
+${bodyArea.directive}
+
+${palette.directive}
+
+OUTPUT:
+- Pure white background
+${bodyArea.constraint}
+- No typography, watermarks, or borders
+- Single centred design, square (1:1) aspect ratio
+- Crisp, sharp linework
+${palette.constraint}
+`.trim();
+}
+
+// ── 2c. TATTOO DESIGN — Text Tattoo (initial) ───────────────
+
+export function buildTextTattooPrompt(
+  description: string,
+  style: string,
+  hasReferenceImages: boolean,
+  colorHexes: string[] = [],
+  targetBodyArea: string = ""
+): string {
+  const styleLabel = style || "fine-line black-and-grey";
+  const palette = buildPaletteBlock(colorHexes);
+  const bodyArea = buildBodyAreaBlock(targetBodyArea);
+  const hasColors = colorHexes.length > 0;
+
+  const referenceDirective = hasReferenceImages
+    ? "Use the reference images to match the requested font style, lettering character, and any accompanying design elements."
+    : "";
+
+  return `
+You are a professional tattoo lettering artist. Create a single complete tattoo design where TEXT is the primary element.
+
+DESCRIPTION: ${description.trim()}
+
+${referenceDirective}
+
+${bodyArea.directive}
+
+${palette.directive}
+
+TEXT ACCURACY — these are the highest priority requirements:
+- Render every letter, word, and character EXACTLY as described — spelling must be perfect
+- The font style requested must be faithfully reproduced — if a specific font or style is named (e.g. Old English, cursive, serif, handwritten), match it precisely
+- Letter spacing, kerning, and baseline must be consistent and intentional — no uneven gaps or misaligned characters
+- If the description mentions a font by name, reproduce that font's distinctive letterforms accurately
+
+LETTERING STYLE:
+${buildStyleBlock(styleLabel, hasColors)}
+
+ACCOMPANYING ELEMENTS (if any described):
+- Symbols, flourishes, hearts, butterflies, flowers, or other motifs mentioned in the description must be rendered at the correct size relative to the text
+- Placement of decorative elements must match the description exactly — e.g. "heart between words", "roses below the text", "wings above"
+- Decorative elements and text must feel like a unified composition, not disconnected pieces
+
+COMPOSITION:
+- Text must be the visual anchor of the design — all other elements support it
+- The layout must be intentional — single line, stacked, arched, or curved as described
+- Balanced negative space around and between elements
+
+OUTPUT:
+- Pure white background
+${palette.constraint}
+${bodyArea.constraint}
+- No unintended text, watermarks, or decorative borders
+- Single centred design, square (1:1) aspect ratio
+- Professional tattoo studio quality — ready to transfer to a stencil
+`.trim();
+}
+
+// ── 2d. TATTOO DESIGN — Text Tattoo (refinement) ────────────
+
+export function buildTextTattooRefinementPrompt(
+  description: string,
+  style: string,
+  refinement: RefinementInfo,
+  colorHexes: string[] = [],
+  targetBodyArea: string = ""
+): string {
+  const styleLabel = style || "fine-line black-and-grey";
+  const palette = buildPaletteBlock(colorHexes);
+  const bodyArea = buildBodyAreaBlock(targetBodyArea);
+  const hasColors = colorHexes.length > 0;
+
+  const imageLabels = refinement.selectedImages
+    .map((img) => `  - Image ${img.index}: "${img.name}"`)
+    .join("\n");
+
+  const baseInstruction = refinement.faithfulMode
+    ? `Apply ONLY the following minor changes to the selected text tattoo design. Preserve all lettering, font style, spacing, and element placement exactly — change only what is explicitly described.`
+    : `Refine this text tattoo design based on the selected variations and customer feedback. The text and font accuracy must remain the highest priority.`;
+
+  return `
+You are a professional tattoo lettering artist. ${baseInstruction}
+
+ORIGINAL DESCRIPTION: ${description.trim()}
+
+REFERENCE DESIGNS:
+${imageLabels}
+
+CUSTOMER FEEDBACK:
+"${refinement.text.trim()}"
+
+${bodyArea.directive}
+
+${palette.directive}
+
+TEXT ACCURACY — maintain throughout:
+- Every letter and word must be spelled and rendered exactly correctly
+- Font style and letterform character from the selected reference(s) must be preserved or improved
+- Letter spacing, kerning, and baseline alignment must be clean and consistent
+
+ACCOMPANYING ELEMENTS:
+- Preserve the position, scale, and style of all decorative elements unless the feedback specifically requests changes
+- Text and design elements must remain a unified composition
+
+${buildStyleBlock(styleLabel, hasColors)}
+
+OUTPUT:
+- Pure white background
+${bodyArea.constraint}
+- No unintended text, watermarks, or borders
+- Single centred design, square (1:1) aspect ratio
+- Crisp, sharp linework
+${palette.constraint}
+`.trim();
+}
+
 // ── 3. Unified entry point used by /api/generate ─────────────
 
 export function buildTattooPrompt(
@@ -776,10 +946,20 @@ export function buildTattooPrompt(
   hasReferenceImages: boolean,
   refinement?: RefinementInfo,
   colorHexes: string[] = [],
-  targetBodyArea: string = ""
+  targetBodyArea: string = "",
+  isTextTattoo = false
 ): string {
   if (refinement && refinement.selectedImages.length > 0) {
+    if (isTextTattoo) {
+      return buildTextTattooRefinementPrompt(description, style, refinement, colorHexes, targetBodyArea);
+    }
+    if (refinement.faithfulMode) {
+      return buildFaithfulRefinementPrompt(description, style, refinement, colorHexes, targetBodyArea);
+    }
     return buildRefinementPrompt(description, style, refinement, colorHexes, targetBodyArea);
+  }
+  if (isTextTattoo) {
+    return buildTextTattooPrompt(description, style, hasReferenceImages, colorHexes, targetBodyArea);
   }
   return buildInitialDesignPrompt(description, style, hasReferenceImages, colorHexes, targetBodyArea);
 }
@@ -825,24 +1005,35 @@ export function buildPlacementPrompt(placementDescription: string, hasBodyPhoto:
     : "Place the tattoo in the most aesthetically fitting location visible in the image.";
 
   const bodyContext = hasBodyPhoto
-    ? "Image 1 is the tattoo design. Image 2 is the customer's body photo — composite the tattoo naturally onto it."
-    : `Image 1 is the tattoo design. Generate a realistic human body for the placement area and composite the tattoo onto it.\n\nCAMERA FRAMING: ${inferCameraFrame(placementDescription)}`;
+    ? "Image 1 is the tattoo design (on a white background). Image 2 is the customer's body photo. Composite the tattoo ink onto the body — the white background of Image 1 is NOT part of the tattoo, treat it as fully transparent."
+    : `Image 1 is the tattoo design (on a white background — treat white as transparent, not a color). Generate a realistic human body for the placement area and composite only the ink artwork onto the skin.\n\nCAMERA FRAMING: ${inferCameraFrame(placementDescription)}`;
 
   return `
-Create a realistic tattoo placement preview.
+You are a professional tattoo retouching artist. Your task is to make a photorealistic tattoo placement preview that looks like a real photograph of a freshly tattooed person.
 
 ${placementClause}
 ${bodyContext}
 
-REQUIREMENTS:
-- The tattoo ink appears absorbed into the skin surface — follows skin curves, contours, and lighting
-- Match the lighting direction and shadows from the body
-- Preserve the tattoo's linework, detail, and proportions exactly — do not alter the design
-- Tattoo edges blend seamlessly into the surrounding skin — no borders or sticker effect
-- Scale the tattoo anatomically for the body part
-- Add subtle skin highlights and shadows over the tattoo for realism
+CRITICAL — THE TATTOO DESIGN HAS A WHITE BACKGROUND:
+- The white in the design image is the background — it must NOT appear on skin
+- Only the actual ink lines, shading, and artwork should transfer onto the skin
+- The skin should show through everywhere the original design had white space
 
-OUTPUT: Photorealistic tattoo portfolio quality — the kind of photo a professional tattoo studio would post to showcase their work.
+REALISM REQUIREMENTS — every one of these must be true in the output:
+- The ink sits BENEATH the epidermis — skin texture, pores, and fine hair are visible ON TOP of the tattoo ink
+- The tattoo follows the natural curves, contours, and muscle definition of the body — it wraps the skin, it does not float above it
+- Skin tone subtly influences the ink color, especially at the edges — pure blacks shift slightly warmer on darker skin
+- The lighting and shadows from the body fall OVER the tattoo — highlights and shadows cross the tattoo as if it is part of the skin
+- Tattoo edges are slightly soft and natural — not sharp digital cut-out edges
+- Scale the tattoo proportionally for the body part — a forearm tattoo reads as forearm-sized, not oversized or miniature
+
+WHAT TO AVOID:
+- No white or light halo around the tattoo edges
+- No sticker effect — the tattoo must not look like an image glued onto skin
+- No floating or shadow beneath the tattoo
+- Do not change the tattoo design — preserve every line, shape, and detail exactly
+
+OUTPUT: A single photorealistic photograph — the kind a professional tattoo studio would post to Instagram to showcase fresh work. Natural studio or daylight lighting.
 `.trim();
 }
 
@@ -850,25 +1041,34 @@ OUTPUT: Photorealistic tattoo portfolio quality — the kind of photo a professi
 
 export function buildCompositePrompt(): string {
   return `
-You have three reference images:
-1. The composite — the customer's body photo with the tattoo already overlaid at the exact chosen position, size, and angle
-2. The tattoo design — the clean isolated artwork with full linework detail (use this for design accuracy only)
-3. The original body photo — clean skin with natural lighting and texture
+You are a professional tattoo retouching artist. You have three reference images:
 
-Your task: make the tattoo in image 1 look genuinely inked onto the skin.
+IMAGE 1 — The composite: the customer's body photo with the tattoo design overlaid at the exact position, size, and rotation the customer chose in the editor. This is your position/size/angle blueprint — it must be followed with pixel-level accuracy.
+IMAGE 2 — The clean tattoo design: the isolated artwork on a white background. The white is background only — treat it as transparent. Use this image ONLY to recover sharp linework and fine detail that may be compressed or blurry in Image 1.
+IMAGE 3 — The original body photo: clean skin with natural lighting, skin texture, and colour. Use this as the skin and lighting reference.
 
-CRITICAL — SIZE AND POSITION ARE LOCKED BY IMAGE 1:
-- The tattoo MUST remain at EXACTLY the same position, size, and angle as shown in image 1 — this is what the customer chose
-- Do NOT resize, reposition, rescale, or reinterpret the placement under any circumstances
-- If the tattoo appears small in image 1, render it small. If large, render it large. Match it exactly.
-- Use image 2 ONLY to recover fine linework detail that may be unclear at the composite's scale — never to resize or recompose
+YOUR TASK: Produce a single photorealistic photograph that looks like a real person with this tattoo — the kind of studio photo posted to showcase fresh professional ink.
 
-REALISM PASS (apply to the tattoo at the locked position/size from image 1):
-- The tattoo ink sits absorbed into the skin surface — follows skin curves, contours, and muscle definition
-- Match the lighting direction, shadows, and skin tone from image 3
-- Tattoo edges fade seamlessly into surrounding skin — no sticker borders, no hard edges
-- Add subtle skin highlights and shadows over the tattoo ink for depth
+━━━ POSITION, SIZE AND ROTATION — NON-NEGOTIABLE ━━━
+- The tattoo must appear at EXACTLY the position, size, and rotation shown in Image 1. This is a hard constraint.
+- Do NOT move, resize, rotate, reframe, or reinterpret the placement for any reason — not for aesthetics, not for "better composition"
+- If the tattoo is small in Image 1, it must be small in the output. If rotated, it must be rotated identically.
+- Any deviation from Image 1's placement is a failure.
 
-OUTPUT: Photorealistic tattoo portfolio photo — same framing and background as image 3, with the tattoo rendered as if professionally inked at the exact size and position shown in image 1.
+━━━ REALISM — ALL OF THESE MUST BE TRUE ━━━
+- The white background of the tattoo design is INVISIBLE — only ink lines and shading appear on the skin. No white patches, no light halo.
+- The ink is BENEATH the epidermis — skin texture, pores, and fine surface hair are visible overlaid on top of the ink
+- The tattoo follows the skin's natural curves and muscle definition — it wraps the body, it does not float above it
+- Lighting and shadows from Image 3 cross over the tattoo surface — the same light that falls on the surrounding skin also falls on the tattoo
+- Skin tone subtly tints the ink, especially at edges — the ink does not look cleaner or more saturated than real tattoo ink
+- Tattoo edges are slightly soft — real ink diffuses slightly into the dermis, it does not have a sharp digital cut-out edge
+
+━━━ WHAT NOT TO DO ━━━
+- Do NOT show a white or light patch where the design background was
+- Do NOT produce a sticker-on-skin effect — no hard edges, no shadow beneath the design
+- Do NOT change the design — preserve every line and shape from Image 2 at the position from Image 1
+- Do NOT alter the framing, crop, or background from Image 3
+
+OUTPUT: Same framing and background as Image 3. The tattoo rendered at exactly Image 1's placement. Photorealistic — indistinguishable from a real photograph of a freshly tattooed person.
 `.trim();
 }

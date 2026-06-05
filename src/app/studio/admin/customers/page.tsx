@@ -75,7 +75,6 @@ export default function CustomersPage() {
     setFiltered(
       customers.filter(
         (c) =>
-          c.first_name.toLowerCase().includes(q) ||
           c.phone.replace(/\D/g, "").includes(q.replace(/\D/g, "")) ||
           c.phone.toLowerCase().includes(q)
       )
@@ -111,7 +110,7 @@ export default function CustomersPage() {
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search by name or phone number…"
+              placeholder="Search by phone number…"
               autoFocus
               className="w-full bg-surface border border-cleo-border rounded-xl pl-11 pr-10 py-3.5 text-ink text-sm placeholder:text-muted/50 focus:outline-none focus:border-gold transition-colors"
             />
