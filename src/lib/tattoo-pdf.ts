@@ -186,18 +186,23 @@ export async function loadTrimmedStencilImage(src: string): Promise<HTMLImageEle
 }
 
 // ── Multi-page stencil PDF ──────────────────────────────────────────
+export interface StencilInstance {
+  sizePercent: number;
+  rotation: number;
+  mirrored: boolean;
+  center: { x: number; y: number };
+}
+
 export interface StencilPdfOptions {
   imageUrl: string;
   count: number;
-  sizePercent: number;
-  mirrored: boolean;
-  /** Clockwise rotation in degrees, applied about the tattoo's centre. */
-  rotation?: number;
-  center: { x: number; y: number };
+  instances: StencilInstance[];
   /** Pre-loaded image to reuse the preview's load (skips a second fetch). */
   image?: HTMLImageElement;
   subtitle?: string;
   filename?: string;
+  /** Safe-area margin in mm. Defaults to STENCIL_MARGIN_MM (2mm). */
+  marginMm?: number;
 }
 
 /**
@@ -209,18 +214,19 @@ export interface StencilPdfOptions {
 export async function downloadTattooStencilPdf({
   imageUrl,
   count,
-  sizePercent,
-  mirrored,
-  rotation = 0,
-  center,
+  instances,
   image,
   subtitle,
   filename = "tattoo-stencil.pdf",
+  marginMm = STENCIL_MARGIN_MM,
 }: StencilPdfOptions): Promise<void> {
   const img = image ?? (await loadStencilImage(imageUrl));
   const aspect = img.naturalWidth > 0 && img.naturalHeight > 0 ? img.naturalWidth / img.naturalHeight : 1;
-  const layout = computeStencilLayout({ count, sizePercent, aspect, center });
-  const { cols, rows, tattooLeft, tattooTop, tattooW, tattooH } = layout;
+  const { cols, rows } = stencilGrid(count);
+  // Pre-compute layout for every instance once — cols/rows/totalW/totalH are identical across all.
+  const layouts = instances.map(inst =>
+    computeStencilLayout({ count, sizePercent: inst.sizePercent, aspect, center: inst.center })
+  );
 
   // 150 DPI is plenty: the source design is ~1K, so higher DPI adds file size
   // without real detail. pxPerMm = DPI / 25.4.
@@ -246,24 +252,25 @@ export async function downloadTattooStencilPdf({
       ctx.fillStyle = "#ffffff";
       ctx.fillRect(0, 0, sheetWpx, sheetHpx);
 
-      // Tattoo box expressed relative to THIS sheet's origin (mm → px).
-      const dx = (tattooLeft - col * A4_MM.w) * pxPerMm;
-      const dy = (tattooTop - row * A4_MM.h) * pxPerMm;
-      const dw = tattooW * pxPerMm;
-      const dh = tattooH * pxPerMm;
+      // Render every instance onto this sheet's canvas.
+      for (let ii = 0; ii < instances.length; ii++) {
+        const inst = instances[ii];
+        const { tattooLeft, tattooTop, tattooW, tattooH } = layouts[ii];
 
-      // Transform about the tattoo's centre. The centre is the SAME global
-      // point on every sheet (just offset by the sheet origin), so mirror +
-      // rotation stay consistent across the whole tiled composite. Order
-      // (mirror then rotate) matches the CSS preview's `scaleX(-1) rotate()`.
-      const cxpx = dx + dw / 2;
-      const cypx = dy + dh / 2;
-      ctx.save();
-      ctx.translate(cxpx, cypx);
-      if (mirrored) ctx.scale(-1, 1);
-      if (rotation) ctx.rotate((rotation * Math.PI) / 180);
-      ctx.drawImage(img, -dw / 2, -dh / 2, dw, dh);
-      ctx.restore();
+        const dx = (tattooLeft - col * A4_MM.w) * pxPerMm;
+        const dy = (tattooTop - row * A4_MM.h) * pxPerMm;
+        const dw = tattooW * pxPerMm;
+        const dh = tattooH * pxPerMm;
+
+        const cxpx = dx + dw / 2;
+        const cypx = dy + dh / 2;
+        ctx.save();
+        ctx.translate(cxpx, cypx);
+        if (inst.mirrored) ctx.scale(-1, 1);
+        if (inst.rotation) ctx.rotate((inst.rotation * Math.PI) / 180);
+        ctx.drawImage(img, -dw / 2, -dh / 2, dw, dh);
+        ctx.restore();
+      }
 
       // Faint assembly label, top-left corner.
       ctx.fillStyle = "rgba(0,0,0,0.32)";
@@ -277,7 +284,7 @@ export async function downloadTattooStencilPdf({
       // Outer safe-area guide. Each sheet draws only the segments that sit on
       // an exterior edge of the assembled grid; corners terminate at the
       // perpendicular margin so taped sheets form one continuous rectangle.
-      const M = STENCIL_MARGIN_MM;
+      const M = marginMm;
       const exteriorLeft   = col === 0;
       const exteriorRight  = col === cols - 1;
       const exteriorTop    = row === 0;

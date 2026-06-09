@@ -12,6 +12,14 @@ import {
   type SheetCount,
 } from "@/lib/tattoo-pdf";
 
+interface TattooInstance {
+  id: string;
+  center: { x: number; y: number };
+  sizePercent: number;
+  rotation: number;
+  mirrored: boolean;
+}
+
 interface Props {
   imageUrl: string;
   /** Used to compose the download filename. */
@@ -25,10 +33,13 @@ const MAX_PERCENT = 200;
 
 export default function TattooPrintStudio({ imageUrl, subtitle, filenameBase = "tattoo-stencil", onClose }: Props) {
   const [count, setCount] = useState<SheetCount>(1);
-  const [sizePercent, setSizePercent] = useState(100);
-  const [mirrored, setMirrored] = useState(true);
-  const [rotation, setRotation] = useState(0);
-  const [center, setCenter] = useState(() => defaultStencilCenter(1));
+  const [marginMm, setMarginMm] = useState(STENCIL_MARGIN_MM);
+
+  const nextId = useRef(2);
+  const [instances, setInstances] = useState<TattooInstance[]>([
+    { id: "1", center: defaultStencilCenter(1), sizePercent: 100, rotation: 0, mirrored: true },
+  ]);
+  const [selectedId, setSelectedId] = useState("1");
 
   const [img, setImg] = useState<HTMLImageElement | null>(null);
   const [aspect, setAspect] = useState(1);
@@ -53,15 +64,14 @@ export default function TattooPrintStudio({ imageUrl, subtitle, filenameBase = "
     return () => { cancelled = true; };
   }, [imageUrl]);
 
-  // Switch sheet count and recentre in one step (the grid resizes under it).
+  // Switch sheet count, recentre all instances on the new grid.
   function handleCountChange(n: SheetCount) {
+    const newCenter = defaultStencilCenter(n);
     setCount(n);
-    setCenter(defaultStencilCenter(n));
+    setInstances(prev => prev.map(inst => ({ ...inst, center: newCenter })));
   }
 
   // Measure the available preview area so we can scale mm → px to fit.
-  // setStage runs only from the ResizeObserver callback (an external-system
-  // subscription), which also fires once on observe() for the initial size.
   useLayoutEffect(() => {
     const el = stageRef.current;
     if (!el) return;
@@ -70,10 +80,22 @@ export default function TattooPrintStudio({ imageUrl, subtitle, filenameBase = "
     return () => ro.disconnect();
   }, []);
 
-  const { cols, rows, totalW, totalH, tattooLeft, tattooTop, tattooW, tattooH } = useMemo(
-    () => computeStencilLayout({ count, sizePercent, aspect, center }),
-    [count, sizePercent, aspect, center]
+  // Compute layout for every instance (cols/rows/totalW/totalH are identical across all).
+  const instanceLayouts = useMemo(
+    () => instances.map(inst => computeStencilLayout({ count, sizePercent: inst.sizePercent, aspect, center: inst.center })),
+    [instances, count, aspect]
   );
+
+  // Grid dimensions — same for every instance, so read from the first.
+  const { cols, rows, totalW, totalH } = instanceLayouts[0];
+
+  const selectedIndex = instances.findIndex(i => i.id === selectedId);
+  const selected = instances[selectedIndex] ?? instances[0];
+  const selectedLayout = instanceLayouts[selectedIndex] ?? instanceLayouts[0];
+
+  function updateSelected(patch: Partial<Omit<TattooInstance, "id">>) {
+    setInstances(prev => prev.map(inst => inst.id === selectedId ? { ...inst, ...patch } : inst));
+  }
 
   // Fit the whole grid inside the stage with a little breathing room.
   const { scale, dispW, dispH } = useMemo(() => {
@@ -84,24 +106,34 @@ export default function TattooPrintStudio({ imageUrl, subtitle, filenameBase = "
     return { scale: s, dispW: totalW * s, dispH: totalH * s };
   }, [stage.w, stage.h, totalW, totalH]);
 
-  // ── Drag the tattoo across the grid ───────────────────────────────
-  const dragRef = useRef<{ startMX: number; startMY: number; startCX: number; startCY: number } | null>(null);
+  // ── Drag the selected tattoo across the grid ──────────────────────
+  const dragRef = useRef<{
+    instanceId: string;
+    startMX: number;
+    startMY: number;
+    startCX: number;
+    startCY: number;
+  } | null>(null);
 
   const onDragMove = useCallback((e: PointerEvent) => {
     const d = dragRef.current;
     if (!d || scale <= 0) return;
     const dxMm = (e.clientX - d.startMX) / scale;
     const dyMm = (e.clientY - d.startMY) / scale;
-    setCenter({
-      x: Math.min(totalW, Math.max(0, d.startCX + dxMm)),
-      y: Math.min(totalH, Math.max(0, d.startCY + dyMm)),
-    });
+    setInstances(prev => prev.map(inst =>
+      inst.id === d.instanceId
+        ? { ...inst, center: {
+            x: Math.min(totalW, Math.max(0, d.startCX + dxMm)),
+            y: Math.min(totalH, Math.max(0, d.startCY + dyMm)),
+          }}
+        : inst
+    ));
   }, [scale, totalW, totalH]);
 
-  function handleDragDown(e: React.PointerEvent) {
+  function handleDragDown(e: React.PointerEvent, instId: string, instCenter: { x: number; y: number }) {
     e.preventDefault();
-    dragRef.current = { startMX: e.clientX, startMY: e.clientY, startCX: center.x, startCY: center.y };
-    // Hoisted declarations so `up` can deregister itself without a use-before-define.
+    setSelectedId(instId);
+    dragRef.current = { instanceId: instId, startMX: e.clientX, startMY: e.clientY, startCX: instCenter.x, startCY: instCenter.y };
     function move(ev: PointerEvent) { onDragMove(ev); }
     function up() {
       dragRef.current = null;
@@ -110,6 +142,32 @@ export default function TattooPrintStudio({ imageUrl, subtitle, filenameBase = "
     }
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
+  }
+
+  function handleDuplicate() {
+    const id = String(nextId.current++);
+    const src = selected;
+    const offset = 20; // mm — offset so the copy is visibly separate
+    setInstances(prev => [
+      ...prev,
+      {
+        ...src,
+        id,
+        center: {
+          x: Math.min(totalW, src.center.x + offset),
+          y: Math.min(totalH, src.center.y + offset),
+        },
+      },
+    ]);
+    setSelectedId(id);
+  }
+
+  function handleDelete() {
+    if (instances.length <= 1) return;
+    const idx = instances.findIndex(i => i.id === selectedId);
+    const remaining = instances.filter(i => i.id !== selectedId);
+    setInstances(remaining);
+    setSelectedId(remaining[Math.max(0, idx - 1)].id);
   }
 
   async function handleDownload() {
@@ -121,12 +179,10 @@ export default function TattooPrintStudio({ imageUrl, subtitle, filenameBase = "
         imageUrl,
         image: img,
         count,
-        sizePercent,
-        mirrored,
-        rotation,
-        center,
+        instances: instances.map(({ center, sizePercent, rotation, mirrored }) => ({ center, sizePercent, rotation, mirrored })),
         subtitle,
         filename: `${filenameBase}-${count}xA4.pdf`,
+        marginMm,
       });
     } catch (err) {
       setDownloadError((err as Error).message);
@@ -140,25 +196,13 @@ export default function TattooPrintStudio({ imageUrl, subtitle, filenameBase = "
     gridTemplateRows: `repeat(${rows}, 1fr)`,
   }), [cols, rows]);
 
-  const tattooImgStyle = useMemo(() => ({
-    left: tattooLeft * scale,
-    top: tattooTop * scale,
-    width: tattooW * scale,
-    height: tattooH * scale,
-    maxWidth: "none" as const,
-    maxHeight: "none" as const,
-    transform: `${mirrored ? "scaleX(-1) " : ""}rotate(${rotation}deg)`,
-    touchAction: "none" as const,
-    objectFit: "contain" as const,
-  }), [tattooLeft, tattooTop, tattooW, tattooH, scale, mirrored, rotation]);
-
   const safeAreaStyle = useMemo(() => ({
-    left: STENCIL_MARGIN_MM * scale,
-    top: STENCIL_MARGIN_MM * scale,
-    right: STENCIL_MARGIN_MM * scale,
-    bottom: STENCIL_MARGIN_MM * scale,
+    left: marginMm * scale,
+    top: marginMm * scale,
+    right: marginMm * scale,
+    bottom: marginMm * scale,
     border: "1px solid #b4b4b4",
-  }), [scale]);
+  }), [marginMm, scale]);
 
   return (
     <motion.div
@@ -167,7 +211,7 @@ export default function TattooPrintStudio({ imageUrl, subtitle, filenameBase = "
       exit={{ opacity: 0 }}
       className="fixed inset-0 z-50 bg-black/90 backdrop-blur-sm flex flex-col lg:flex-row"
     >
-      {/* ── Lightroom preview (left / center) ───────────────────────── */}
+      {/* ── Preview (left / center) ──────────────────────────────────── */}
       <div className="relative flex-1 min-h-0 flex flex-col">
         <div className="flex items-center justify-between px-4 sm:px-6 py-3 border-b border-white/10">
           <div>
@@ -212,33 +256,48 @@ export default function TattooPrintStudio({ imageUrl, subtitle, filenameBase = "
                 ))}
               </div>
 
-              {/* Safe-area guide — matches the thin grey line in the PDF.
-                  Single rectangle around the assembled grid (not per sheet),
-                  inset by the printer-safe margin. Visual only — the tattoo
-                  is not clipped to it. */}
+              {/* Safe-area guide — matches the thin grey line in the PDF. */}
               <div
                 aria-hidden
                 className="absolute pointer-events-none z-30"
                 style={safeAreaStyle}
               />
 
-              {/* Tattoo — draggable, mirrored in place when toggled */}
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src={img.src}
-                alt="Tattoo stencil"
-                onPointerDown={handleDragDown}
-                draggable={false}
-                className="absolute z-20 cursor-move"
-                style={tattooImgStyle}
-              />
+              {/* All tattoo instances — click/drag to select & reposition */}
+              {instances.map((inst, i) => {
+                const layout = instanceLayouts[i];
+                const isSelected = inst.id === selectedId;
+                return (
+                  <img
+                    key={inst.id}
+                    src={img.src}
+                    alt={`Tattoo stencil ${i + 1}`}
+                    onPointerDown={(e) => handleDragDown(e, inst.id, inst.center)}
+                    draggable={false}
+                    className="absolute z-20 cursor-move"
+                    style={{
+                      left: layout.tattooLeft * scale,
+                      top: layout.tattooTop * scale,
+                      width: layout.tattooW * scale,
+                      height: layout.tattooH * scale,
+                      maxWidth: "none",
+                      maxHeight: "none",
+                      transform: `${inst.mirrored ? "scaleX(-1) " : ""}rotate(${inst.rotation}deg)`,
+                      touchAction: "none",
+                      objectFit: "contain",
+                      outline: isSelected ? "2px solid rgba(201,168,76,0.85)" : "none",
+                      outlineOffset: "3px",
+                    }}
+                  />
+                );
+              })}
             </div>
           )}
         </div>
 
         <div className="px-4 sm:px-6 py-2 border-t border-white/10">
           <p className="text-white/40 text-[10px] font-mono text-center">
-            Drag the design to reposition · Print at 100% · Grey border = {STENCIL_MARGIN_MM}mm printer safe-area
+            Drag the design to reposition · Print at 100% · Grey border = {marginMm}mm printer safe-area
           </p>
         </div>
       </div>
@@ -278,19 +337,65 @@ export default function TattooPrintStudio({ imageUrl, subtitle, filenameBase = "
             <p className="text-muted/50 text-[10px] font-mono">One large tattoo split across the sheets.</p>
           </div>
 
+          {/* Copies */}
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center justify-between">
+              <label className="text-[10px] font-mono tracking-[0.15em] uppercase text-muted">Copies on sheet</label>
+              <span className="text-white/40 text-[10px] font-mono">{instances.length} total</span>
+            </div>
+            {instances.length > 1 && (
+              <div className="flex flex-wrap gap-1.5">
+                {instances.map((inst, i) => (
+                  <button
+                    key={inst.id}
+                    onClick={() => setSelectedId(inst.id)}
+                    className={`w-8 h-8 rounded-lg font-mono text-xs border transition-all cursor-pointer ${
+                      inst.id === selectedId
+                        ? "bg-gold text-bg border-gold"
+                        : "bg-bg text-muted border-cleo-border hover:border-gold/40 hover:text-ink"
+                    }`}
+                  >
+                    {i + 1}
+                  </button>
+                ))}
+              </div>
+            )}
+            <div className="flex gap-2">
+              <button
+                onClick={handleDuplicate}
+                className="flex-1 py-2 rounded-lg border border-cleo-border text-muted hover:border-gold/40 hover:text-gold text-xs font-mono transition-all cursor-pointer bg-bg"
+              >
+                + Duplicate
+              </button>
+              {instances.length > 1 && (
+                <button
+                  onClick={handleDelete}
+                  className="px-3 py-2 rounded-lg border border-cleo-border text-muted hover:border-error/40 hover:text-error text-xs font-mono transition-all cursor-pointer bg-bg"
+                >
+                  Remove
+                </button>
+              )}
+            </div>
+            {instances.length > 1 && (
+              <p className="text-muted/50 text-[10px] font-mono">
+                Editing copy {selectedIndex + 1} of {instances.length}. Click a tattoo in the preview to select it.
+              </p>
+            )}
+          </div>
+
           {/* Size percentage */}
           <div className="flex flex-col gap-2">
             <div className="flex items-center justify-between">
               <label className="text-[10px] font-mono tracking-[0.15em] uppercase text-muted">Size adjustment</label>
-              <span className="text-gold text-xs font-mono font-bold">{sizePercent}%</span>
+              <span className="text-gold text-xs font-mono font-bold">{selected.sizePercent}%</span>
             </div>
             <input
               type="range"
               min={MIN_PERCENT}
               max={MAX_PERCENT}
               step={1}
-              value={sizePercent}
-              onChange={(e) => setSizePercent(Number(e.target.value))}
+              value={selected.sizePercent}
+              onChange={(e) => updateSelected({ sizePercent: Number(e.target.value) })}
               className="w-full accent-gold cursor-pointer"
             />
             <div className="flex justify-between text-[9px] font-mono text-muted/40">
@@ -299,7 +404,7 @@ export default function TattooPrintStudio({ imageUrl, subtitle, filenameBase = "
               <span>{MAX_PERCENT}%</span>
             </div>
             <p className="text-muted/50 text-[10px] font-mono">
-              Tattoo ≈ {Math.round(tattooW)}×{Math.round(tattooH)}mm on paper.
+              Tattoo ≈ {Math.round(selectedLayout.tattooW)}×{Math.round(selectedLayout.tattooH)}mm on paper.
             </p>
           </div>
 
@@ -307,15 +412,15 @@ export default function TattooPrintStudio({ imageUrl, subtitle, filenameBase = "
           <div className="flex flex-col gap-2">
             <div className="flex items-center justify-between">
               <label className="text-[10px] font-mono tracking-[0.15em] uppercase text-muted">Rotation</label>
-              <span className="text-gold text-xs font-mono font-bold">{rotation}°</span>
+              <span className="text-gold text-xs font-mono font-bold">{selected.rotation}°</span>
             </div>
             <div className="grid grid-cols-4 gap-1.5">
               {[0, 90, 180, 270].map((deg) => (
                 <button
                   key={deg}
-                  onClick={() => setRotation(deg)}
+                  onClick={() => updateSelected({ rotation: deg })}
                   className={`py-2 rounded-lg font-mono text-xs border transition-all cursor-pointer ${
-                    rotation === deg
+                    selected.rotation === deg
                       ? "bg-gold text-bg border-gold"
                       : "bg-bg text-muted border-cleo-border hover:border-gold/40 hover:text-ink"
                   }`}
@@ -329,8 +434,8 @@ export default function TattooPrintStudio({ imageUrl, subtitle, filenameBase = "
               min={0}
               max={359}
               step={1}
-              value={rotation}
-              onChange={(e) => setRotation(Number(e.target.value))}
+              value={selected.rotation}
+              onChange={(e) => updateSelected({ rotation: Number(e.target.value) })}
               className="w-full accent-gold cursor-pointer"
             />
           </div>
@@ -345,14 +450,39 @@ export default function TattooPrintStudio({ imageUrl, subtitle, filenameBase = "
             </div>
             <button
               role="switch"
-              aria-checked={mirrored}
-              onClick={() => setMirrored((m) => !m)}
-              className={`relative w-12 h-6 rounded-full transition-colors flex-shrink-0 cursor-pointer ${mirrored ? "bg-gold" : "bg-surface-2 border border-cleo-border"}`}
+              aria-checked={selected.mirrored}
+              onClick={() => updateSelected({ mirrored: !selected.mirrored })}
+              className={`relative w-12 h-6 rounded-full transition-colors flex-shrink-0 cursor-pointer ${selected.mirrored ? "bg-gold" : "bg-surface-2 border border-cleo-border"}`}
             >
               <span
-                className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-all ${mirrored ? "left-[26px]" : "left-0.5"}`}
+                className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-all ${selected.mirrored ? "left-[26px]" : "left-0.5"}`}
               />
             </button>
+          </div>
+
+          {/* Safe-area margin */}
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center justify-between">
+              <label className="text-[10px] font-mono tracking-[0.15em] uppercase text-muted">Safe-area margin</label>
+              <span className="text-gold text-xs font-mono font-bold">{marginMm}mm</span>
+            </div>
+            <input
+              type="range"
+              min={0}
+              max={20}
+              step={0.5}
+              value={marginMm}
+              onChange={(e) => setMarginMm(Number(e.target.value))}
+              className="w-full accent-gold cursor-pointer"
+            />
+            <div className="flex justify-between text-[9px] font-mono text-muted/40">
+              <span>0mm</span>
+              <span>10mm</span>
+              <span>20mm</span>
+            </div>
+            <p className="text-muted/50 text-[10px] font-mono leading-snug">
+              Grey border inset shown in preview and printed in PDF. Default 2mm matches most printer safe-areas.
+            </p>
           </div>
         </div>
 
