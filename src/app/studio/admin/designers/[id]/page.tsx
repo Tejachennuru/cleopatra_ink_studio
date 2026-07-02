@@ -2,7 +2,7 @@
 
 import { useState, useEffect, use } from "react";
 import { useRouter } from "next/navigation";
-import { motion } from "framer-motion";
+import { motion, AnimatePresence } from "framer-motion";
 import Link from "next/link";
 import { createSupabaseBrowserClient } from "@/lib/supabase-client";
 import type { StaffMember } from "@/lib/staff-types";
@@ -49,6 +49,7 @@ export default function DesignerDetailPage({ params }: { params: Promise<{ id: s
   const [resetError, setResetError] = useState<string | null>(null);
   const [lastSetPassword, setLastSetPassword] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [viewingImage, setViewingImage] = useState<string | null>(null);
 
   function generatePassword() {
     const charset = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789";
@@ -366,7 +367,9 @@ export default function DesignerDetailPage({ params }: { params: Promise<{ id: s
                       {/* Design thumbnail */}
                       <div className="w-20 h-20 sm:w-24 sm:h-24 rounded-xl overflow-hidden bg-surface-2 border border-cleo-border flex-shrink-0">
                         {finalDesign?.image_url ? (
-                          <TattooThumb url={finalDesign.image_url} />
+                          <button type="button" onClick={() => setViewingImage(finalDesign.image_url)} className="w-full h-full cursor-pointer hover:opacity-80 transition-opacity">
+                            <TattooThumb url={finalDesign.image_url} />
+                          </button>
                         ) : (
                           <div className="w-full h-full flex items-center justify-center">
                             <span className="text-2xl text-muted/20">✦</span>
@@ -408,7 +411,13 @@ export default function DesignerDetailPage({ params }: { params: Promise<{ id: s
                       <div className="border-t border-cleo-border px-4 py-3 flex gap-2 overflow-x-auto">
                         {designs.map((d, j) => (
                           <div key={j} className={`w-12 h-12 rounded-lg overflow-hidden flex-shrink-0 border ${d.is_finalized ? "border-gold/50" : "border-cleo-border"}`}>
-                            {d.image_url ? <TattooThumb url={d.image_url} /> : <div className="w-full h-full bg-surface-2" />}
+                            {d.image_url ? (
+                              <button type="button" onClick={() => setViewingImage(d.image_url!)} className="w-full h-full cursor-pointer hover:opacity-80 transition-opacity block">
+                                <TattooThumb url={d.image_url} />
+                              </button>
+                            ) : (
+                              <div className="w-full h-full bg-surface-2" />
+                            )}
                           </div>
                         ))}
                       </div>
@@ -420,6 +429,36 @@ export default function DesignerDetailPage({ params }: { params: Promise<{ id: s
           )}
         </motion.div>
       </div>
+
+      <AnimatePresence>
+        {viewingImage && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setViewingImage(null)}
+            className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4 sm:p-8 cursor-pointer"
+          >
+            <button
+              onClick={(e) => { e.stopPropagation(); setViewingImage(null); }}
+              className="absolute top-4 right-4 sm:top-6 sm:right-6 w-10 h-10 rounded-full bg-surface/80 border border-cleo-border text-ink hover:bg-error/20 hover:border-error/40 hover:text-error transition-colors flex items-center justify-center text-xl leading-none z-10 cursor-pointer"
+            >
+              ×
+            </button>
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              transition={{ type: "spring", bounce: 0, duration: 0.3 }}
+              className="relative w-full max-w-2xl aspect-square rounded-2xl overflow-hidden border border-gold/30 shadow-2xl bg-black"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={viewingImage} alt="Design Fullscreen" className="w-full h-full object-contain" />
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </main>
   );
 }

@@ -13,6 +13,7 @@ import StyleSelect from "@/components/ui/StyleSelect";
 import PinterestSearch from "@/components/pinterest/PinterestSearch";
 import { blobUrlToBase64 } from "@/lib/image-utils";
 import { TATTOO_COLORS } from "@/lib/tattoo-colors";
+import { TypographyGenerator } from "@/components/typography/TypographyGenerator";
 
 const SERVICE_UNAVAILABLE_MSG =
   "AI generation credits are exhausted. Please contact the admin to top up the credits and restore the service.";
@@ -101,6 +102,8 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
 
   const [faithfulMode, setFaithfulMode] = useState(false);
   const [isTextTattoo, setIsTextTattoo] = useState(false);
+  const [showTypographyModal, setShowTypographyModal] = useState(false);
+  const [textTattooRefUrl, setTextTattooRefUrl] = useState<string | null>(null);
   const [enhancing, setEnhancing] = useState(false);
   const [enhancedVariations, setEnhancedVariations] = useState<string[] | null>(null);
   const [enhanceError, setEnhanceError] = useState<string | null>(null);
@@ -228,6 +231,33 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
   const addedPinIds = referenceImages
     .map((url) => pinIdByUrl[url])
     .filter((id): id is string => Boolean(id));
+
+  // ── Typography Handler ────────────────────────────────────
+  async function handleTypographyGenerated(dataUrl: string, font: string) {
+    const b64 = dataUrl.split(",")[1];
+    setUploadingDirect(true);
+    try {
+      const res = await fetch("/api/upload-ref", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId, image: b64, prefix: "designs" }),
+      });
+      if (!res.ok) throw new Error("Upload failed");
+      const { url: permanentUrl } = await res.json();
+      
+      addReferenceImage(permanentUrl);
+      setTextTattooRefUrl(permanentUrl);
+      
+      const { setTextTattooDetails } = useAppStore.getState();
+      setTextTattooDetails(font);
+      
+      setShowTypographyModal(false);
+    } catch (err) {
+      console.error("Typography save failed:", err);
+    } finally {
+      setUploadingDirect(false);
+    }
+  }
 
   // ── Direct upload handlers ────────────────────────────────
   async function handleDirectFileDrop(files: File[]) {
@@ -474,6 +504,8 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
     if (!canGenerate) return;
     setRefineSourceDesigns([]);
     const { images, urls } = await splitReferences();
+    const { textTattooFont } = useAppStore.getState();
+    
     callGenerateAPI({
       sessionId,
       description: tattooDescription,
@@ -484,6 +516,9 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
       colors: selectedColors,
       targetBodyArea,
       count: 5,
+      ...(isTextTattoo && textTattooFont
+        ? { textTattooFont } 
+        : {}),
     });
   }
 
@@ -557,6 +592,33 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
             }}
             onClose={() => setShowCamera(false)}
           />
+        )}
+      </AnimatePresence>
+
+      {/* ── Typography Modal ─────────────────────────────────────── */}
+      <AnimatePresence>
+        {showTypographyModal && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 sm:p-8 overflow-y-auto"
+          >
+            <motion.div
+              initial={{ scale: 0.95, y: 20 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.95, y: 20 }}
+              className="w-full max-w-xl my-auto"
+            >
+              <TypographyGenerator
+                onDesignGenerated={handleTypographyGenerated}
+                onCancel={() => {
+                  setShowTypographyModal(false);
+                  setIsTextTattoo(false); // Cancel means we didn't add the text
+                }}
+              />
+            </motion.div>
+          </motion.div>
         )}
       </AnimatePresence>
 
@@ -635,6 +697,7 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
                       alt={viewingDesign.styleName}
                       fill
                       priority
+                      unoptimized
                       sizes="(max-width: 768px) 100vw, 68vh"
                       className="object-contain"
                     />
@@ -751,7 +814,7 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
                 >
                   <div className="aspect-square max-h-[68vh] mx-auto relative">
                     {src.imageUrl ? (
-                      <Image src={src.imageUrl} alt={src.styleName} fill priority sizes="(max-width: 768px) 100vw, 68vh" className="object-contain" />
+                      <Image src={src.imageUrl} alt={src.styleName} fill priority unoptimized sizes="(max-width: 768px) 100vw, 68vh" className="object-contain" />
                     ) : (
                       <DesignPatternSVG type={src.patternType} />
                     )}
@@ -786,20 +849,38 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
 
         {/* ── Mode switcher ──────────────────────────────────────── */}
         <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4, delay: 0.04 }}
-          className="flex gap-2 p-1 bg-surface rounded-xl border border-cleo-border w-full sm:w-fit">
+          className="flex gap-2 p-1 bg-surface rounded-xl border border-cleo-border w-full flex-wrap sm:flex-nowrap sm:w-fit">
           {[
-            { mode: "ai" as const, label: "✦ AI Design", desc: "Generate with AI" },
-            { mode: "direct" as const, label: "↑ Upload Existing", desc: "Customer has a design" },
-          ].map(({ mode, label }) => (
+            { 
+              mode: "ai" as const, 
+              label: "AI Design", 
+              icon: (
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
+                </svg>
+              )
+            },
+
+            { 
+              mode: "direct" as const, 
+              label: "Upload Existing", 
+              icon: (
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                </svg>
+              )
+            },
+          ].map(({ mode: m, label, icon }) => (
             <button
-              key={mode}
-              onClick={() => setDesignMode(mode)}
-              className={`flex-1 sm:flex-none px-4 py-2.5 rounded-lg font-cinzel font-bold text-xs tracking-[0.08em] uppercase transition-all cursor-pointer ${
-                designMode === mode
+              key={m}
+              onClick={() => setDesignMode(m)}
+              className={`flex-1 sm:flex-none flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg font-cinzel font-bold text-xs tracking-[0.08em] uppercase transition-all cursor-pointer whitespace-nowrap ${
+                designMode === m
                   ? "bg-gold text-bg shadow-[0_0_12px_rgba(201,168,76,0.3)]"
-                  : "text-muted hover:text-ink"
+                  : "text-muted hover:text-ink hover:bg-surface-2"
               }`}
             >
+              {icon}
               {label}
             </button>
           ))}
@@ -1017,7 +1098,7 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
           <div className="flex items-center gap-3 p-3 bg-bg rounded-xl border border-cleo-border">
             <div className="flex-1 min-w-0">
               <p className="text-xs font-cinzel font-bold text-ink leading-tight">
-                {isTextTattoo ? "Text Tattoo Mode" : "Standard Design Mode"}
+                Text Tattoo Mode
               </p>
               <p className="text-muted text-[10px] mt-0.5 leading-snug">
                 {isTextTattoo
@@ -1027,7 +1108,23 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
             </div>
             <button
               type="button"
-              onClick={() => setIsTextTattoo((v) => !v)}
+              onClick={() => {
+                const next = !isTextTattoo;
+                setIsTextTattoo(next);
+                if (next) {
+                  setShowTypographyModal(true);
+                } else {
+                  if (textTattooRefUrl) {
+                    const idx = referenceImages.indexOf(textTattooRefUrl);
+                    if (idx !== -1) {
+                      removeReferenceImage(idx);
+                    }
+                    setTextTattooRefUrl(null);
+                    const { setTextTattooDetails } = useAppStore.getState();
+                    setTextTattooDetails(null);
+                  }
+                }
+              }}
               aria-pressed={isTextTattoo}
               className={`flex-shrink-0 w-11 h-6 rounded-full border transition-colors cursor-pointer flex items-center px-0.5 ${
                 isTextTattoo
@@ -1289,6 +1386,10 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
           </motion.button>
         </motion.div>
 
+        </>} {/* end designMode === "ai" Input Card */}
+
+        {(designMode === "ai") && <>
+
         {/* ── Loading spinner — only while no images have arrived yet ─── */}
         <AnimatePresence>
           {isGenerating && generatedDesigns.length === 0 && (
@@ -1375,6 +1476,7 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
                               src={d.imageUrl}
                               alt={d.styleName}
                               fill
+                              unoptimized
                               sizes="112px"
                               className="object-cover"
                             />
@@ -1445,7 +1547,15 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
                   const canSelect = !isSelected && selectedDesigns.length < 4;
 
                   return (
-                    <motion.button
+                    <motion.div
+                      role="button"
+                      tabIndex={0}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          setViewingIndex(i);
+                        }
+                      }}
                       key={design.id}
                       initial={{ opacity: 0, scale: 0.88, y: 14 }}
                       animate={{ opacity: 1, scale: 1, y: 0 }}
@@ -1466,6 +1576,7 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
                             src={design.imageUrl}
                             alt={design.styleName}
                             fill
+                            unoptimized
                             sizes="(max-width: 640px) 50vw, 25vw"
                             className="object-cover"
                           />
@@ -1522,7 +1633,7 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
                           {isSelected ? `Selected #${selectionOrder}` : canSelect ? "Tap to view" : "Tap to view"}
                         </p>
                       </div>
-                    </motion.button>
+                    </motion.div>
                   );
                 })}
 
@@ -1747,7 +1858,7 @@ export default function DesignPage({ params }: { params: Promise<{ sessionId: st
       </div>
 
       {/* ── Sticky mobile CTA bar (AI mode only) */}
-      {designMode === "ai" && <>{/* ── Sticky mobile CTA bar ─────────────────────────────────────
+      {(designMode === "ai") && <>{/* ── Sticky mobile CTA bar ─────────────────────────────────────
           Mirrors the primary action for the current state so the user
           never has to scroll back up. Inline desktop buttons remain. */}
       <div className="sm:hidden fixed bottom-0 inset-x-0 z-30 bg-bg/95 backdrop-blur-md border-t border-cleo-border px-4 pt-3 pb-safe">
