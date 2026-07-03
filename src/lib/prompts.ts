@@ -1088,9 +1088,10 @@ YOUR TASK: Produce a single photorealistic photograph that looks like a real per
 - Any change to the original photo's background, crop, or the person's original anatomy is an absolute failure.
 
 ━━━ POSITION, SIZE AND REALISM ━━━
-- Image 1 shows the intended placement, but it is just a flat mock-up.
-- You MUST warp, bend, and adjust the perspective of the tattoo so it naturally follows the 3D curves, muscles, and contours of the body shown in Image 3. Do not leave it looking like a flat sticker.
-- The tattoo must remain generally in the same location and size as Image 1, but its edges and shape MUST wrap the anatomy naturally.
+- Image 1 shows the intended placement. The overall position and scale of the tattoo MUST match Image 1.
+- You CANNOT move the tattoo to a different body part (e.g., if it is on the face, it must stay on the face; if on the hand, it must stay on the hand). Moving the tattoo is an absolute failure.
+- If any part of the tattoo design extends PAST the skin and floats in the empty background in Image 1, you MUST erase or clip those floating parts. Tattoo ink can ONLY exist on skin. Do not render floating ink in the background.
+- However, Image 1 is just a flat mock-up. You MUST warp, bend, and adjust the perspective of the tattoo's edges and internal shapes so it naturally follows the 3D curves, muscles, and contours of the body shown in Image 3. Do not leave it looking like a flat sticker.
 
 ━━━ BLENDING AND PHOTOREALISM — ALL MUST BE TRUE ━━━
 - The white background of the tattoo design is INVISIBLE — only ink lines and shading appear on the skin. No white patches, no light halo.
@@ -1137,6 +1138,8 @@ ${anatomyNote}
 
 Image 1 shows the intended position and size of the design. Before rendering, look carefully at the actual skin surface under the design in Image 3:
 
+- The overall position and scale of the tattoo MUST match Image 1 exactly. You CANNOT move the tattoo to a different body part (e.g., if it is on the face, it must stay on the face; if on the hand, it must stay on the hand). Moving the tattoo is an absolute failure.
+- If any part of the tattoo design extends PAST the skin and floats in the empty background in Image 1, you MUST erase or clip those floating parts. Tattoo ink can ONLY exist on skin. Do not render floating ink in the background.
 - You MUST warp, bend, and adjust the perspective of the tattoo so it naturally follows the 3D curves, muscles, and contours of the anatomy shown in Image 3.
 - Do NOT leave it looking like a flat sticker. Even seemingly flat areas like cheeks or the back of a hand have subtle curvature that the tattoo must respect.
 - Where the design crosses a real ridge, fold, or edge (e.g., nose bridge, knuckle lines, jawline, fingers), you must bend and foreshorten the linework at that exact point so it wraps the curve perfectly.
