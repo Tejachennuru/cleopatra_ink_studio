@@ -53,6 +53,9 @@ interface AppState {
   refinementText: string;
   isGenerating: boolean;
   iterationCount: number;
+  
+  // Text Tattoo Modal state (persisted across reloads if active)
+  textTattooFont: string | null;
 
   // Placement step
   placementText: string;
@@ -83,6 +86,7 @@ interface AppState {
   clearDesignSelection: () => void;
   selectDesign: (design: DesignVariant) => void;
   setRefinementText: (text: string) => void;
+  setTextTattooDetails: (font: string | null) => void;
   setPlacementText: (text: string) => void;
   setBodyPhoto: (url: string | null) => void;
   generatePlacement: () => void;
@@ -110,6 +114,7 @@ const defaultState = {
   tattooStyle: "",
   tattooDescription: "",
   targetBodyArea: "",
+  textTattooFont: null,
   referenceImages: [],
   selectedColors: [] as string[],
   generatedDesigns: [],
@@ -133,6 +138,7 @@ const freshSessionDesignState = {
   tattooStyle: "",
   tattooDescription: "",
   targetBodyArea: "",
+  textTattooFont: null,
   referenceImages: [] as string[],
   selectedColors: [] as string[],
   generatedDesigns: [],
@@ -261,6 +267,8 @@ export const useAppStore = create<AppState>()(
   selectDesign: (design) => set({ selectedDesign: design }),
 
   setRefinementText: (text) => set({ refinementText: text }),
+
+  setTextTattooDetails: (font) => set({ textTattooFont: font }),
 
   setPlacementText: (text) => set({ placementText: text }),
 

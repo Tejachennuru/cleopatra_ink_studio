@@ -41,6 +41,7 @@ export async function POST(req: NextRequest) {
     colors = [] as string[],
     targetBodyArea = "",
     count = 5,
+    textTattooFont,
   } = await req.json();
 
   if (!description?.trim()) {
@@ -101,7 +102,8 @@ export async function POST(req: NextRequest) {
     refinementInfo,
     Array.isArray(colors) ? (colors as string[]) : [],
     typeof targetBodyArea === "string" ? targetBodyArea : "",
-    isTextTattoo as boolean
+    isTextTattoo as boolean,
+    textTattooFont ? { font: textTattooFont } : undefined
   );
 
   // ── Stream results as each task completes ────────────────────────────

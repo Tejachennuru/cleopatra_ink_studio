@@ -104,6 +104,7 @@ export default function TattooPlacementEditor({ bodyPhotoUrl, tattooImageUrl, on
     transformOrigin: "center center",
     cursor: "move",
     touchAction: "none" as const,
+    mixBlendMode: "multiply" as const,
   }), [pos.x, pos.y, tattooWidth, tattooHeight, rotation]);
 
   // ── Drag ────────────────────────────────────────────────────────────
@@ -221,6 +222,7 @@ export default function TattooPlacementEditor({ bodyPhotoUrl, tattooImageUrl, on
       ctx.save();
       ctx.translate(px, py);
       ctx.rotate((r * Math.PI) / 180);
+      ctx.globalCompositeOperation = "multiply";
       ctx.drawImage(tattooImg, -tw / 2, -th / 2, tw, th);
       ctx.restore();
 

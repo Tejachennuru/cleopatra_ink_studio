@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createKeiTask, waitForKeiTask, KeiTaskFailedError, KeiCreditsError } from "@/lib/kei-api";
-import { buildPlacementPrompt, buildCompositePrompt } from "@/lib/prompts";
+import {
+  buildPlacementPrompt,
+  buildCompositePrompt,
+  buildCompositePromptForComplexAnatomy,
+  classifySurface,
+} from "@/lib/prompts";
 import { uploadBase64, uploadFromUrl } from "@/lib/storage";
 
 export const maxDuration = 300;
@@ -88,7 +93,11 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const result = await runKeiWithRetry(buildCompositePrompt(), inputUrls);
+    const surface = classifySurface(placementText ?? "");
+    const compositePrompt =
+      surface === "flat" ? buildCompositePrompt() : buildCompositePromptForComplexAnatomy(surface);
+
+    const result = await runKeiWithRetry(compositePrompt, inputUrls);
     if (!result.ok) {
       return NextResponse.json(
         {

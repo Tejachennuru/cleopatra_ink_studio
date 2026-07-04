@@ -31,6 +31,16 @@ interface StyleDescriptor {
   subjects: string;
 }
 
+// ── Surface classification for placement prompts ────────────
+export type SurfaceType = "flat" | "face" | "hand";
+
+export function classifySurface(targetBodyArea: string): SurfaceType {
+  const a = (targetBodyArea || "").toLowerCase();
+  if (/face|nose|cheek|forehead|chin|jaw|temple|eyelid|ear/.test(a)) return "face";
+  if (/hand|finger|knuckle|palm|thumb/.test(a)) return "hand";
+  return "flat";
+}
+
 const STYLE_PROMPT_DESCRIPTORS: Record<string, StyleDescriptor> = {
 
   // ── BLACK & GREY ──────────────────────────────────────────
@@ -641,6 +651,11 @@ function buildBodyAreaBlock(targetBodyArea: string): { directive: string; constr
   const trimmed = targetBodyArea.trim();
   if (!trimmed) return { directive: "", constraint: "- No body parts, skin, hands, limbs, or tattoo machines" };
 
+  const isComplexAnatomy = trimmed.toLowerCase().includes("hand") || trimmed.toLowerCase().includes("face") || trimmed.toLowerCase().includes("head") || trimmed.toLowerCase().includes("finger");
+  const anatomyConstraint = isComplexAnatomy 
+    ? `\n- CRITICAL ANATOMY CONSTRAINT: The target area is complex (${trimmed}). DO NOT draw deformed hands, broken faces, or mangled fingers in the background. Draw ONLY the tattoo artwork flat on the white background.` 
+    : "";
+
   return {
     directive: `
 TARGET BODY AREA: This tattoo will be placed on the ${trimmed}. Design it with that area in mind:
@@ -649,7 +664,7 @@ TARGET BODY AREA: This tattoo will be placed on the ${trimmed}. Design it with t
 - Compose so the design feels at home on that body part
 `.trim(),
     constraint: `- ABSOLUTELY NO body parts in the image. Despite the target area being the ${trimmed}, the output MUST be the tattoo DESIGN ONLY — drawn flat on pure white background, exactly as it would appear on stencil paper before being applied to skin.
-- Do NOT draw the ${trimmed}, any skin, any anatomy, any limb, any silhouette of a body. Only the standalone artwork.`,
+- Do NOT draw the ${trimmed}, any skin, any anatomy, any limb, any silhouette of a body. Only the standalone artwork.${anatomyConstraint}`,
   };
 }
 
@@ -667,7 +682,7 @@ function buildStyleBlock(style: string, hasColors: boolean): string {
 - Finish: crisp, sharp edges — no smearing or blurriness`;
   }
 
-  return `STYLE: ${style} tattoo — every visual characteristic below is MANDATORY
+  return `STYLE: ${style} tattoo — every visual characteristic below is MANDATORY:
 - Linework: ${desc.linework}
 - Shading: ${desc.shading}
 - Color: ${desc.color}
@@ -677,6 +692,7 @@ function buildStyleBlock(style: string, hasColors: boolean): string {
 - Finish: crisp, sharp edges — no smearing or blurriness
 - CRITICAL: The output must be unmistakably and immediately recognisable as ${style} style to a knowledgeable tattoo artist`;
 }
+
 
 // ── 1. TATTOO DESIGN — Initial Generation ───────────────────
 
@@ -693,7 +709,7 @@ export function buildInitialDesignPrompt(
   const hasColors = colorHexes.length > 0;
 
   const referenceDirective = hasReferenceImages
-    ? "Extract the core motifs, composition, and linework character from the reference images and translate them into this tattoo design."
+    ? `Extract the core motifs, composition, and linework character from the reference images and translate them into this tattoo design.\n- CRITICAL OVERRIDE: DO NOT blindly copy the exact colors or shading style of the reference images! You MUST completely reimagine the reference images in the EXACT colors, palette, and style requested below.`
     : "";
 
   return `
@@ -812,6 +828,7 @@ ${bodyArea.directive}
 
 ${palette.directive}
 
+
 OUTPUT:
 - Pure white background
 ${bodyArea.constraint}
@@ -829,7 +846,8 @@ export function buildTextTattooPrompt(
   style: string,
   hasReferenceImages: boolean,
   colorHexes: string[] = [],
-  targetBodyArea: string = ""
+  targetBodyArea: string = "",
+  textTattooDetails?: { font: string }
 ): string {
   const styleLabel = style || "fine-line black-and-grey";
   const palette = buildPaletteBlock(colorHexes);
@@ -840,10 +858,15 @@ export function buildTextTattooPrompt(
     ? "Use the reference images to match the requested font style, lettering character, and any accompanying design elements."
     : "";
 
+  const fontDirective = textTattooDetails?.font
+    ? `\nFONT REQUIREMENT: The user has explicitly selected the font "${textTattooDetails.font}". You MUST render the text in this exact font style.`
+    : "";
+
   return `
 You are a professional tattoo lettering artist. Create a single complete tattoo design where TEXT is the primary element.
 
 DESCRIPTION: ${description.trim()}
+${fontDirective}
 
 ${referenceDirective}
 
@@ -870,6 +893,7 @@ COMPOSITION:
 - The layout must be intentional — single line, stacked, arched, or curved as described
 - Balanced negative space around and between elements
 
+
 OUTPUT:
 - Pure white background
 ${palette.constraint}
@@ -887,7 +911,8 @@ export function buildTextTattooRefinementPrompt(
   style: string,
   refinement: RefinementInfo,
   colorHexes: string[] = [],
-  targetBodyArea: string = ""
+  targetBodyArea: string = "",
+  textTattooDetails?: { font: string }
 ): string {
   const styleLabel = style || "fine-line black-and-grey";
   const palette = buildPaletteBlock(colorHexes);
@@ -902,10 +927,15 @@ export function buildTextTattooRefinementPrompt(
     ? `Apply ONLY the following minor changes to the selected text tattoo design. Preserve all lettering, font style, spacing, and element placement exactly — change only what is explicitly described.`
     : `Refine this text tattoo design based on the selected variations and customer feedback. The text and font accuracy must remain the highest priority.`;
 
+  const fontDirective = textTattooDetails?.font
+    ? `\nFONT REQUIREMENT: The user has explicitly selected the font "${textTattooDetails.font}". You MUST render the text in this exact font style.`
+    : "";
+
   return `
 You are a professional tattoo lettering artist. ${baseInstruction}
 
 ORIGINAL DESCRIPTION: ${description.trim()}
+${fontDirective}
 
 REFERENCE DESIGNS:
 ${imageLabels}
@@ -947,11 +977,12 @@ export function buildTattooPrompt(
   refinement?: RefinementInfo,
   colorHexes: string[] = [],
   targetBodyArea: string = "",
-  isTextTattoo = false
+  isTextTattoo = false,
+  textTattooDetails?: { font: string }
 ): string {
   if (refinement && refinement.selectedImages.length > 0) {
     if (isTextTattoo) {
-      return buildTextTattooRefinementPrompt(description, style, refinement, colorHexes, targetBodyArea);
+      return buildTextTattooRefinementPrompt(description, style, refinement, colorHexes, targetBodyArea, textTattooDetails);
     }
     if (refinement.faithfulMode) {
       return buildFaithfulRefinementPrompt(description, style, refinement, colorHexes, targetBodyArea);
@@ -959,7 +990,7 @@ export function buildTattooPrompt(
     return buildRefinementPrompt(description, style, refinement, colorHexes, targetBodyArea);
   }
   if (isTextTattoo) {
-    return buildTextTattooPrompt(description, style, hasReferenceImages, colorHexes, targetBodyArea);
+    return buildTextTattooPrompt(description, style, hasReferenceImages, colorHexes, targetBodyArea, textTattooDetails);
   }
   return buildInitialDesignPrompt(description, style, hasReferenceImages, colorHexes, targetBodyArea);
 }
@@ -1043,32 +1074,92 @@ export function buildCompositePrompt(): string {
   return `
 You are a professional tattoo retouching artist. You have three reference images:
 
-IMAGE 1 — The composite: the customer's body photo with the tattoo design overlaid at the exact position, size, and rotation the customer chose in the editor. This is your position/size/angle blueprint — it must be followed with pixel-level accuracy.
-IMAGE 2 — The clean tattoo design: the isolated artwork on a white background. The white is background only — treat it as transparent. Use this image ONLY to recover sharp linework and fine detail that may be compressed or blurry in Image 1.
-IMAGE 3 — The original body photo: clean skin with natural lighting, skin texture, and colour. Use this as the skin and lighting reference.
+IMAGE 1 — The composite: the customer's body photo with the tattoo design overlaid roughly at the intended position and size. This is your STARTING REFERENCE for placement — it is a flat mock-up, NOT a rigid mask to copy exactly.
+IMAGE 2 — The clean tattoo design: the isolated artwork on a white background. The white is background only — treat it as transparent. Use this image to recover sharp linework and fine detail.
+IMAGE 3 — The original body photo: clean skin with natural lighting, skin texture, and underlying anatomy. Use this to understand the true 3D shape of the body underneath the tattoo.
 
 YOUR TASK: Produce a single photorealistic photograph that looks like a real person with this tattoo — the kind of studio photo posted to showcase fresh professional ink.
 
-━━━ POSITION, SIZE AND ROTATION — NON-NEGOTIABLE ━━━
-- The tattoo must appear at EXACTLY the position, size, and rotation shown in Image 1. This is a hard constraint.
-- Do NOT move, resize, rotate, reframe, or reinterpret the placement for any reason — not for aesthetics, not for "better composition"
-- If the tattoo is small in Image 1, it must be small in the output. If rotated, it must be rotated identically.
-- Any deviation from Image 1's placement is a failure.
+🚨 ━━━ STRICT STRUCTURAL PRESERVATION (HIGHEST PRIORITY) ━━━ 🚨
+- The background, lighting, framing, crop, and anatomical structure of the body in Image 3 MUST be preserved EXACTLY as they are.
+- DO NOT ZOOM IN. DO NOT CROP THE IMAGE.
+- If the body part is small in Image 3, it MUST be small in the output. If there is empty space around the body in Image 3, that EXACT empty space MUST be in the output. Do not fill the frame with the body part if it was not like that in Image 3.
+- You are ONLY allowed to modify the pixels where the tattoo ink is being applied.
+- Any change to the original photo's background, crop, or the person's original anatomy is an absolute failure.
+
+━━━ POSITION, SIZE AND REALISM ━━━
+- Image 1 shows the intended placement. The overall position and scale of the tattoo MUST match Image 1.
+- You CANNOT move the tattoo to a different body part (e.g., if it is on the face, it must stay on the face; if on the hand, it must stay on the hand). Moving the tattoo is an absolute failure.
+- If any part of the tattoo design extends PAST the skin and floats in the empty background in Image 1, you MUST erase or clip those floating parts. Tattoo ink can ONLY exist on skin. Do not render floating ink in the background.
+- However, Image 1 is just a flat mock-up. You MUST warp, bend, and adjust the perspective of the tattoo's edges and internal shapes so it naturally follows the 3D curves, muscles, and contours of the body shown in Image 3. Do not leave it looking like a flat sticker.
+
+━━━ BLENDING AND PHOTOREALISM — ALL MUST BE TRUE ━━━
+- The white background of the tattoo design is INVISIBLE — only ink lines and shading appear on the skin. No white patches, no light halo.
+- The ink sits BENEATH the epidermis — skin texture, pores, and fine surface hair from Image 3 are visible overlaid on top of the ink.
+- Match the lighting direction, shadows, and skin tone from Image 3.
+- Skin tone subtly tints the ink, especially at edges — the ink does not look cleaner or more saturated than real tattoo ink.
+- Tattoo edges are slightly soft — real ink diffuses slightly into the dermis, it does not have a sharp digital cut-out edge.
+
+━━━ WHAT NOT TO DO ━━━
+- Do NOT produce a sticker-on-skin effect — no hard edges, no shadow beneath the design.
+- Do NOT show a white or light patch where the design background was.
+- Do NOT change the tattoo's core design or add new elements — only adjust its projection onto the surface.
+- Do NOT alter the framing, crop, or background from Image 3.
+
+OUTPUT: Same framing and background as Image 3. Photorealistic — indistinguishable from a real photograph of a freshly tattooed person.
+`.trim();
+}
+
+// ── 6. PLACEMENT — Composite mode, complex anatomy (face/hand) ──
+
+export function buildCompositePromptForComplexAnatomy(surface: "face" | "hand"): string {
+  const anatomyNote = surface === "face"
+    ? "Faces have both flat areas (cheeks, forehead, temple) and areas with real curvature or ridges (nose bridge and tip, eye socket edges, jawline)."
+    : "Hands have both flat areas (back of hand between the knuckles and wrist, the flat top before fingers begin) and areas with real curvature (finger cylinders, knuckle valleys, thumb side).";
+
+  return `
+You are a professional tattoo retouching artist. You have three reference images:
+
+IMAGE 1 — The composite: the customer's body photo with the tattoo design overlaid roughly at the intended position and size. This is a STARTING REFERENCE for placement and scale only — it is a flat mock-up, NOT a rigid mask to copy exactly.
+IMAGE 2 — The clean tattoo design: the isolated artwork on a white background. The white is background only — treat it as transparent. Use this ONLY to recover sharp linework and fine detail.
+IMAGE 3 — The original body photo: clean skin with natural lighting, skin texture, and underlying anatomy. Use this to understand the true 3D shape of the body underneath the tattoo.
+
+YOUR TASK: Produce a single photorealistic photograph of this person with the tattoo naturally applied — the way a real tattoo artist would stencil and apply it, not the way a flat sticker would sit on top of skin.
+
+🚨 ━━━ STRICT STRUCTURAL PRESERVATION (HIGHEST PRIORITY) ━━━ 🚨
+- The background, lighting, framing, crop, and anatomical structure of the body in Image 3 MUST be preserved EXACTLY as they are.
+- DO NOT ZOOM IN. DO NOT CROP THE IMAGE.
+- If the body part is small in the frame in Image 3, it MUST remain small in the output. If there is empty space around the body in Image 3, that EXACT empty space MUST be in the output. Do not fill the frame with the body part if it was not like that in Image 3.
+- You are ONLY allowed to modify the pixels where the tattoo ink is being applied.
+- Any change to the original photo's background, crop, or the person's original anatomy is an absolute failure.
+
+━━━ SURFACE-AWARE PLACEMENT — READ CAREFULLY ━━━
+${anatomyNote}
+
+Image 1 shows the intended position and size of the design. Before rendering, look carefully at the actual skin surface under the design in Image 3:
+
+- The overall position and scale of the tattoo MUST match Image 1 exactly. You CANNOT move the tattoo to a different body part (e.g., if it is on the face, it must stay on the face; if on the hand, it must stay on the hand). Moving the tattoo is an absolute failure.
+- If any part of the tattoo design extends PAST the skin and floats in the empty background in Image 1, you MUST erase or clip those floating parts. Tattoo ink can ONLY exist on skin. Do not render floating ink in the background.
+- You MUST warp, bend, and adjust the perspective of the tattoo so it naturally follows the 3D curves, muscles, and contours of the anatomy shown in Image 3.
+- Do NOT leave it looking like a flat sticker. Even seemingly flat areas like cheeks or the back of a hand have subtle curvature that the tattoo must respect.
+- Where the design crosses a real ridge, fold, or edge (e.g., nose bridge, knuckle lines, jawline, fingers), you must bend and foreshorten the linework at that exact point so it wraps the curve perfectly.
+- Keep the design's overall content, style, and proportions recognisable throughout — you are adjusting how it sits on the surface, not redrawing it.
 
 ━━━ REALISM — ALL OF THESE MUST BE TRUE ━━━
 - The white background of the tattoo design is INVISIBLE — only ink lines and shading appear on the skin. No white patches, no light halo.
-- The ink is BENEATH the epidermis — skin texture, pores, and fine surface hair are visible overlaid on top of the ink
-- The tattoo follows the skin's natural curves and muscle definition — it wraps the body, it does not float above it
-- Lighting and shadows from Image 3 cross over the tattoo surface — the same light that falls on the surrounding skin also falls on the tattoo
-- Skin tone subtly tints the ink, especially at edges — the ink does not look cleaner or more saturated than real tattoo ink
-- Tattoo edges are slightly soft — real ink diffuses slightly into the dermis, it does not have a sharp digital cut-out edge
+- The ink sits BENEATH the epidermis — skin texture, pores, and fine surface hair from Image 3 are visible overlaid on top of the ink.
+- The tattoo follows the skin's natural curves and muscle definition — it wraps the body, it does not float above it.
+- Lighting and shadows from Image 3 cross over the tattoo surface — the same light that falls on the surrounding skin also falls on the tattoo.
+- Skin tone subtly tints the ink, especially at edges — the ink does not look cleaner or more saturated than real tattoo ink.
+- Tattoo edges are slightly soft — real ink diffuses slightly into the dermis, it does not have a sharp digital cut-out edge.
 
 ━━━ WHAT NOT TO DO ━━━
-- Do NOT show a white or light patch where the design background was
-- Do NOT produce a sticker-on-skin effect — no hard edges, no shadow beneath the design
-- Do NOT change the design — preserve every line and shape from Image 2 at the position from Image 1
-- Do NOT alter the framing, crop, or background from Image 3
+- Do NOT generate a flat tattoo. It must wrap the 3D geometry of the body.
+- Do NOT paste a design flat if it spans a genuine ridge or curve — that looks fake.
+- Do NOT show a white or light patch where the design background was.
+- Do NOT change the design's actual content — only its projection onto the surface.
+- Do NOT alter the framing, crop, or background from Image 3.
 
-OUTPUT: Same framing and background as Image 3. The tattoo rendered at exactly Image 1's placement. Photorealistic — indistinguishable from a real photograph of a freshly tattooed person.
+OUTPUT: Same framing and background as Image 3. Photorealistic — indistinguishable from a real photograph of a freshly tattooed person.
 `.trim();
 }
